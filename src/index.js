@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import router from './routes/index.js';
 import { testConnection } from './config/database.js';
 
@@ -13,34 +12,56 @@ const app = express();
 app.set('trust proxy', true);
 const PORT = parseInt(process.env.PORT || '3003', 10);
 
-// ── CORS Configuration ───────────────────────────────────────
+// ── BULLETPROOF DYNAMIC CORS & PREFLIGHT CONFIGURATION ───────
 const allowedOrigins = [
   'https://lhdd.ecosystemlk.app',
-  'http://localhost:5173'
+  'https://api.lhdd.ecosystemlk.app', // 👈 API Domain එක හරහා එන proxy Handshakes සඳහා අනිවාර්යයි
+  'http://localhost:5173',
+  'http://localhost:3003'
 ];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+/**
+ * incoming Request එකේ Origin එක Whitelist එකේ තියෙනවාදැයි පරීක්ෂා කිරීම.
+ */
+function isOriginAllowed(origin) {
+  if (!origin) return false;
+  if (/^https?:\/\/localhost(:\d+)?$/i.test(origin)) return true;
+  if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(origin)) return true;
+  if (/^https:\/\/lhdd\.ecosystemlk\.app\/?$/i.test(origin)) return true;
+  if (/^https:\/\/api\.lhdd\.ecosystemlk\.app\/?$/i.test(origin)) return true;
+  return false;
+}
 
-app.options(/.*/, (req, res) => {
+/**
+ * Custom CORS Middleware Layer - Zero Header Dropouts වළක්වයි
+ */
+app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
+
+  // Inform downstream proxies/caches that response varies by Origin
+  res.setHeader('Vary', 'Origin');
+
+  if (origin && isOriginAllowed(origin)) {
+    // Whitelist එකේ තියෙනවා නම් ඒ origin එකම echo කරයි
     res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
+  } else {
+    // Proxy handshakes වලදී origin එක masked වුවහොත් fallback එකක් ලෙස ක්‍රියා කරයි
+    res.setHeader('Access-Control-Allow-Origin', 'https://lhdd.ecosystemlk.app');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  return res.sendStatus(204);
+
+  // ── OPTIONS Preflight Handling — සැනින් 204 Return කරයි ──
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
+    res.setHeader('Access-Control-Max-Age', '86400'); // 24 Hours cache duration
+    return res.status(204).end();
+  }
+
+  next();
 });
 
 // ── Body Parsing ─────────────────────────────────────────────
