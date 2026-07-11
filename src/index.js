@@ -10,7 +10,8 @@ import { testConnection } from './config/database.js';
 // ─────────────────────────────────────────────────────────────
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '5000', 10);
+app.set('trust proxy', true);
+const PORT = parseInt(process.env.PORT || '3003', 10);
 
 // ── CORS Configuration ───────────────────────────────────────
 const normalizeOrigin = (value) => {
@@ -18,11 +19,10 @@ const normalizeOrigin = (value) => {
   return value.trim().replace(/\/+$/, '').toLowerCase();
 };
 
-const frontendOrigin = normalizeOrigin(process.env.FRONTEND_URL);
 const allowedOrigins = [
-  frontendOrigin,
+  normalizeOrigin(process.env.FRONTEND_URL),
+  normalizeOrigin('https://lhdd.ecosystemlk.app'),
   normalizeOrigin('http://localhost:5173'),
-  normalizeOrigin('http://127.0.0.1:5173'),
 ].filter(Boolean);
 
 const corsOptions = {
@@ -31,22 +31,22 @@ const corsOptions = {
     if (!origin || (normalizedOrigin && allowedOrigins.includes(normalizedOrigin))) {
       callback(null, true);
     } else {
-      callback(new Error('CORS Policy Mismatch Exception'));
+      callback(null, true);
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 };
 
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-  next();
-});
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
+app.options(/.*/, (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
 
 // ── Body Parsing ─────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
