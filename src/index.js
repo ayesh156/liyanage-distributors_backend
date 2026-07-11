@@ -14,40 +14,34 @@ app.set('trust proxy', true);
 const PORT = parseInt(process.env.PORT || '3003', 10);
 
 // ── CORS Configuration ───────────────────────────────────────
-const normalizeOrigin = (value) => {
-  if (!value || typeof value !== 'string') return null;
-  return value.trim().replace(/\/+$/, '').toLowerCase();
-};
-
 const allowedOrigins = [
-  normalizeOrigin(process.env.FRONTEND_URL),
-  normalizeOrigin('https://lhdd.ecosystemlk.app'),
-  normalizeOrigin('http://localhost:5173'),
-].filter(Boolean);
+  'https://lhdd.ecosystemlk.app',
+  'http://localhost:5173'
+];
 
-const isProduction = process.env.NODE_ENV === 'production';
-
-const corsOptions = {
-  origin: (origin, callback) => {
-    const normalizedOrigin = normalizeOrigin(origin);
-    if (!origin || (normalizedOrigin && allowedOrigins.includes(normalizedOrigin))) {
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      callback(null, true);
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-};
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-if (isProduction) {
-  app.use((req, res, next) => next());
-  app.options(/.*/, (req, res) => res.sendStatus(204));
-} else {
-  app.use(cors(corsOptions));
-  app.options(/.*/, cors(corsOptions));
-}
+app.options(/.*/, (req, res) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
 
 // ── Body Parsing ─────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
