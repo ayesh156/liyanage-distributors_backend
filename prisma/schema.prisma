@@ -1,0 +1,183 @@
+// ─────────────────────────────────────────────────────────────
+// LIYANAGE DISTRIBUTORS - PRODUCTION PRISMA SCHEMA
+// Engineered for Ledger Management with Store/SalesPerson/Invoice/Payment
+// Non-destructive migrations, strict relational constraints, scalable
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  password  String
+  role      String   @default("ADMIN")
+  createdAt DateTime @default(now())
+
+  @@map("users")
+}
+
+// ── ENUMS ────────────────────────────────────────────────────
+
+enum DocType {
+  Invoice
+  CreditNote
+  DebitNote
+  Receipt
+}
+
+enum InvoiceStatus {
+  paid
+  pending
+  overdue
+  cancelled
+}
+
+enum PaymentMethod {
+  cash
+  card
+  bank_transfer
+  credit
+  cheque
+}
+
+// ── STORE MODEL ──────────────────────────────────────────────
+// Represents a retail/wholesale customer location or business entity
+
+model Store {
+  id        String    @id @default(uuid())
+  storeCode String?   @unique
+  name      String
+  address   String?   @db.Text
+  routeId   Int?
+  phone     String?
+  salesPersonId String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  invoices  Invoice[]
+  route     Route?      @relation(fields: [routeId], references: [id])
+  salesPerson SalesPerson? @relation(fields: [salesPersonId], references: [id])
+
+  @@index([name])
+  @@index([routeId])
+  @@index([salesPersonId])
+  @@map("stores")
+}
+
+// ── SALES PERSON MODEL ───────────────────────────────────────
+// Represents sales staff who create invoices
+
+model SalesPerson {
+  id        String    @id @default(uuid())
+  name      String
+  phone     String?
+  nic       String?
+  email     String?
+  address   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  invoices  Invoice[]
+  stores    Store[]
+
+  @@index([name])
+  @@map("sales_persons")
+}
+
+model Route {
+  id               Int      @id @default(autoincrement())
+  routeCode        String   @unique
+  name             String   @unique
+  areaCoverage     String?
+  deliverySchedule Json?
+  stores           Store[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([name])
+  @@map("routes")
+}
+
+// ── INVOICE MODEL (CORE LEDGER) ──────────────────────────────
+// The central transactional ledger record. Every financial entry
+// is an Invoice with document tracking, amounts, and balances.
+
+model Invoice {
+  id            String          @id @default(uuid())
+  documentNo    String          @unique          // Human-readable document number (e.g., INV-0001)
+  date          DateTime        @default(now())
+  docType       DocType         @default(Invoice) // Invoice, CreditNote, DebitNote, Receipt
+  description   String?         @db.Text
+  amount        Decimal         @db.Decimal(14, 2) // Total invoice amount (billed)
+  received      Decimal         @default(0) @db.Decimal(14, 2) // Total payments received against this invoice
+  balanceDue    Decimal         @db.Decimal(14, 2) // Calculated: amount - received
+  status        InvoiceStatus   @default(pending)  // paid, pending, overdue, cancelled
+  chequeNo      String?                           // Cheque reference if payment by cheque
+  bankName      String?                           // Bank name for cheque payments
+  branchName    String?                           // Branch name for cheque payments
+
+  // Foreign Keys
+  storeId         String
+  salesPersonId   String
+
+  // Relations
+  store           Store           @relation(fields: [storeId], references: [id])
+  salesPerson     SalesPerson     @relation(fields: [salesPersonId], references: [id])
+  payments        Payment[]
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([documentNo])
+  @@index([storeId])
+  @@index([salesPersonId])
+  @@index([date])
+  @@index([status])
+  @@map("invoices")
+}
+
+// ── PAYMENT / RECEIPT MODEL ──────────────────────────────────
+// Tracks each payment collection event against an Invoice.
+// Supports partial payments, overpayments, and cheque tracking.
+
+model Payment {
+  id          String        @id @default(uuid())
+  date        DateTime      @default(now())
+  amountPaid  Decimal       @db.Decimal(14, 2)  // Payment amount collected
+  description String?       @db.Text
+  paymentMethod PaymentMethod @default(cash)
+  chequeNo    String?                           // Cheque reference if applicable
+  bankName    String?                           // Bank name for cheque payments (e.g. "BOC Morawaka", "Peoples Bank Morawaka")
+  branchName  String?                           // Branch name for cheque payments
+
+  // Foreign Key
+  invoiceId   String
+
+  // Relations
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime      @default(now())
+
+  @@index([invoiceId])
+  @@index([date])
+  @@map("payments")
+}
+
+// ── DOCUMENT COUNTER ─────────────────────────────────────────
+// Atomic counter for generating sequential document numbers
+
+model DocumentCounter {
+  id      Int     @id @default(1)  // Singleton row, always id=1
+  prefix  String  @default("INV-")
+  seq     Int     @default(0)
+  year    Int     @default(2026)
+
+  @@map("document_counters")
+}
