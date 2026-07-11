@@ -25,6 +25,8 @@ const allowedOrigins = [
   normalizeOrigin('http://localhost:5173'),
 ].filter(Boolean);
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 const corsOptions = {
   origin: (origin, callback) => {
     const normalizedOrigin = normalizeOrigin(origin);
@@ -39,14 +41,13 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization'],
 };
 
-app.use(cors(corsOptions));
-app.options(/.*/, (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  return res.sendStatus(204);
-});
+if (isProduction) {
+  app.use((req, res, next) => next());
+  app.options(/.*/, (req, res) => res.sendStatus(204));
+} else {
+  app.use(cors(corsOptions));
+  app.options(/.*/, cors(corsOptions));
+}
 
 // ── Body Parsing ─────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
