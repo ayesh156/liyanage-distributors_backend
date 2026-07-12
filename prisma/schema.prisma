@@ -45,6 +45,7 @@ enum PaymentMethod {
   bank_transfer
   credit
   cheque
+  bank_slip
 }
 
 // ── STORE MODEL ──────────────────────────────────────────────
@@ -168,16 +169,4 @@ model Payment {
   @@index([invoiceId])
   @@index([date])
   @@map("payments")
-}
-
-// ── DOCUMENT COUNTER ─────────────────────────────────────────
-// Atomic counter for generating sequential document numbers
-
-model DocumentCounter {
-  id      Int     @id @default(1)  // Singleton row, always id=1
-  prefix  String  @default("INV-")
-  seq     Int     @default(0)
-  year    Int     @default(2026)
-
-  @@map("document_counters")
 }

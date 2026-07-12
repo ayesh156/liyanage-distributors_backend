@@ -1,4 +1,5 @@
 import prisma from '../config/prisma.js';
+import { PaymentMethod } from '@prisma/client';
 
 function normalizeText(value) {
   const text = String(value ?? '').trim();
@@ -6,12 +7,34 @@ function normalizeText(value) {
 }
 
 function normalizeSelector(value) {
-  return String(value ?? '').trim().toUpperCase();
+  return String(value ?? '').trim().toUpperCase().replace(/[-_\s]+/g, '_');
 }
 
 function isChequeTransaction(payload = {}) {
-  const selector = normalizeSelector(payload.paymentMethod || payload.paymentMode);
-  return selector === 'CHEQUE' || Boolean(normalizeText(payload.chequeNo) || normalizeText(payload.bankName) || normalizeText(payload.branchName));
+  const paymentMethod = resolvePaymentMethodValue(payload);
+  return paymentMethod === PaymentMethod.cheque || paymentMethod === PaymentMethod.bank_transfer;
+}
+
+function resolvePaymentMethodValue(payload = {}) {
+  const selector = normalizeSelector(payload.paymentSelector || payload.paymentMethod || payload.paymentMode || payload.docType);
+  if (Boolean(payload.bankSlip)) return PaymentMethod.bank_transfer;
+
+  switch (selector) {
+    case 'BANK_SLIP':
+    case 'BANKSLIP':
+    case 'BANK_SLIP_PAYMENT':
+    case 'BANK_TRANSFER':
+      return PaymentMethod.bank_transfer;
+    case 'CHEQUE':
+    case 'CHECK':
+    case 'CHEQUE_PAYMENT':
+    case 'CHECK_PAYMENT':
+      return PaymentMethod.cheque;
+    case 'CASH':
+    case 'CASH_PAYMENT':
+    default:
+      return PaymentMethod.cash;
+  }
 }
 
 function toMoneyNumber(value) {
@@ -23,6 +46,78 @@ function toMoneyNumber(value) {
 function computeBalanceDue(amount, received) {
   const computedBalanceDue = parseFloat((Number(amount) - Number(received)).toFixed(2));
   return Math.max(0, Number.isFinite(computedBalanceDue) ? computedBalanceDue : 0);
+}
+
+let storeOutstandingBalanceColumnExists;
+
+async function hasStoreOutstandingBalanceColumn(tx) {
+  if (storeOutstandingBalanceColumnExists !== undefined) {
+    return storeOutstandingBalanceColumnExists;
+  }
+
+  const rows = await tx.$queryRaw`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'stores'
+      AND COLUMN_NAME = 'outstandingBalance'
+    LIMIT 1
+  `;
+
+  storeOutstandingBalanceColumnExists = Array.isArray(rows) && rows.length > 0;
+  return storeOutstandingBalanceColumnExists;
+}
+
+async function recomputeStoreOutstandingBalance(tx, storeId) {
+  if (!storeId) return 0;
+
+  const aggregate = await tx.invoice.aggregate({
+    where: {
+      storeId,
+      status: { not: 'cancelled' },
+      balanceDue: { gt: 0 },
+    },
+    _sum: { balanceDue: true },
+  });
+
+  const outstandingBalance = toMoneyNumber(aggregate?._sum?.balanceDue);
+  const hasOutstandingColumn = await hasStoreOutstandingBalanceColumn(tx);
+
+  if (hasOutstandingColumn) {
+    await tx.$executeRaw`
+      UPDATE stores
+      SET outstandingBalance = ${outstandingBalance.toFixed(2)}
+      WHERE id = ${storeId}
+    `;
+  }
+
+  return outstandingBalance;
+}
+
+async function compileLedgerAggregates(tx) {
+  await Promise.all([
+    tx.invoice.aggregate({
+      where: { status: { not: 'cancelled' } },
+      _sum: {
+        amount: true,
+        received: true,
+        balanceDue: true,
+      },
+      _count: { _all: true },
+    }),
+    tx.invoice.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    }),
+    tx.invoice.groupBy({
+      by: ['storeId'],
+      where: {
+        status: { not: 'cancelled' },
+        balanceDue: { gt: 0 },
+      },
+      _sum: { balanceDue: true },
+    }),
+  ]);
 }
 
 function sumPaymentAmounts(paymentRows = []) {
@@ -158,7 +253,7 @@ const paymentController = {
         branchName,
       } = req.body;
       const chequeTransaction = isChequeTransaction({ paymentMethod, paymentMode, chequeNo, bankName, branchName });
-      const normalizedPaymentMethod = chequeTransaction ? 'cheque' : 'cash';
+      const normalizedPaymentMethod = resolvePaymentMethodValue({ paymentMethod, paymentMode });
       const normalizedChequeNo = normalizeText(chequeNo);
       const normalizedBankName = normalizeText(bankName);
       const normalizedBranchName = normalizeText(branchName);
@@ -196,6 +291,7 @@ const paymentController = {
           where: { id: invoiceId },
           select: {
             id: true,
+            storeId: true,
             documentNo: true,
             amount: true,
             received: true,
@@ -210,6 +306,7 @@ const paymentController = {
             where: { documentNo: invoiceId },
             select: {
               id: true,
+              storeId: true,
               documentNo: true,
               amount: true,
               received: true,
@@ -236,6 +333,7 @@ const paymentController = {
         // 3. INSERT the Payment record
         //    Use the resolved invoice.id (UUID) as the FK, NOT the raw
         //    invoiceId (which may be a documentNo string from fallback).
+        //    Bank fields are OPTIONAL - payment method is authoritative from UI state.
         const payment = await tx.payment.create({
           data: {
             invoiceId: invoice.id,
@@ -243,9 +341,9 @@ const paymentController = {
             amountPaid: payAmount,
             description: normalizedDescription || `Payment collected for ${invoice.documentNo}`,
             paymentMethod: normalizedPaymentMethod,
-            chequeNo: chequeTransaction ? normalizedChequeNo : null,
-            bankName: chequeTransaction ? normalizedBankName : null,
-            branchName: chequeTransaction ? normalizedBranchName : null,
+            chequeNo: normalizedChequeNo || null,
+            bankName: normalizedBankName || null,
+            branchName: normalizedBranchName || null,
           },
         });
 
@@ -274,6 +372,9 @@ const paymentController = {
             status: true,
           },
         });
+
+        await recomputeStoreOutstandingBalance(tx, invoice.storeId);
+        await compileLedgerAggregates(tx);
 
         return { payment, invoice: refreshedInvoice };
       });
@@ -350,7 +451,7 @@ const paymentController = {
         for (const p of safePayments) {
           const payAmount = toMoneyNumber(p.amountPaid);
           const chequeTransaction = isChequeTransaction(p);
-          const normalizedPaymentMethod = chequeTransaction ? 'cheque' : 'cash';
+          const normalizedPaymentMethod = resolvePaymentMethodValue(p);
           const normalizedChequeNo = normalizeText(p.chequeNo);
           const normalizedBankName = normalizeText(p.bankName);
           const normalizedBranchName = normalizeText(p.branchName);

@@ -29,7 +29,6 @@ async function main() {
   await prisma.salesPerson.deleteMany();
   await prisma.store.deleteMany();
   await prisma.route.deleteMany();
-  await prisma.documentCounter.deleteMany();
   console.log('✅ Tables completely truncated.\n');
 
   // ── Step 2: Seed critical Admin authentication record ──
@@ -45,14 +44,6 @@ async function main() {
     },
   });
   console.log('✅ Admin initialized successfully (User: admin).\n');
-
-  // ── Step 3: Seed critical Invoice Counter framework ──
-  console.log('🔢 Setting up invoice sequence document counter...');
-  await prisma.documentCounter.create({
-    data: { id: 1, prefix: 'INV-', seq: 1, year: 2026 }, 
-    // 💡 seq: 1 දැම්මම ක්ලයන්ට් ගහන පළමු ඉන්වොයිස් එක INV-2600001 විදිහට පිරිසිදුවටම පටන් ගන්නවා!
-  });
-  console.log('✅ Document counter sequence successfully initialized.\n');
 
   console.log('🎉 SYSTEM IS NOW 100% READY FOR PRODUCTION DEPLOYMENT! \n');
 }

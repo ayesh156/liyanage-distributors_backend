@@ -64,7 +64,7 @@ export interface UpdateSalesPersonInput {
 
 export type DocType = 'Invoice' | 'CreditNote' | 'DebitNote' | 'Receipt';
 export type InvoiceStatus = 'paid' | 'pending' | 'overdue' | 'cancelled';
-export type PaymentMethod = 'cash' | 'card' | 'bank_transfer' | 'credit' | 'cheque';
+export type PaymentMethod = 'cash' | 'card' | 'bank_transfer' | 'credit' | 'cheque' | 'bank_slip';
 
 export interface InvoiceDTO {
   id: string;

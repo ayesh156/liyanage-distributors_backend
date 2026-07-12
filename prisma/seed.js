@@ -32,7 +32,6 @@ async function main() {
   await prisma.salesPerson.deleteMany();
   await prisma.store.deleteMany();
   await prisma.route.deleteMany();
-  await prisma.documentCounter.deleteMany();
   console.log('✅ All tables cleared.\n');
 
   // ── Step 1.1: Seed authentication admin user ──────────────
@@ -210,11 +209,6 @@ async function main() {
 
   // ── Step 4: Seed Invoices with Payments ──────────────────
   console.log('📄 Seeding Invoices and Payments...');
-
-  // Initialize document counter
-  await prisma.documentCounter.create({
-    data: { id: 1, prefix: 'INV-', seq: 24, year: 2026 },
-  });
 
   let createdInvoiceCount = 0;
 

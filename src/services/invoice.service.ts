@@ -9,6 +9,123 @@ import {
   PaginatedResult,
 } from '../types/index.js';
 
+function normalizeOptionalText(value: unknown, fallback: string | null = null): string | null {
+  if (value === null || value === undefined) return fallback;
+  const text = String(value).trim();
+  return text.length > 0 ? text : fallback;
+}
+
+function normalizeOptionalNumber(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? parseFloat(numeric.toFixed(2)) : 0;
+}
+
+function normalizeSelector(value: unknown): string {
+  return String(value ?? '').trim().toUpperCase().replace(/[-_\s]+/g, '_');
+}
+
+function hasNonEmptyValue(value: unknown): boolean {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+function resolvePaymentMethodValue(payload: any = {}): 'CASH' | 'CHEQUE' | 'BANK_SLIP' {
+  const selector = normalizeSelector(payload.paymentSelector || payload.paymentMethod || payload.paymentMode || payload.docType);
+  if (selector === 'BANK_SLIP' || selector === 'BANKSLIP' || selector === 'BANK_SLIP_PAYMENT' || Boolean(payload.bankSlip)) {
+    return 'BANK_SLIP';
+  }
+  if (selector === 'CHEQUE' || selector === 'CHECK' || selector === 'CHEQUE_PAYMENT' || selector === 'CHECK_PAYMENT') {
+    return 'CHEQUE';
+  }
+  if (selector === 'CASH' || selector === 'CASH_PAYMENT') {
+    return 'CASH';
+  }
+  return 'CASH';
+}
+
+function isChequeTransaction(payload: any = {}): boolean {
+  const paymentMethod = resolvePaymentMethodValue(payload);
+  return paymentMethod === 'CHEQUE' || paymentMethod === 'BANK_SLIP' || Boolean(payload.bankSlip)
+    || Boolean(normalizeOptionalText(payload.chequeNo) || normalizeOptionalText(payload.bankName) || normalizeOptionalText(payload.branchName));
+}
+
+function computeBalanceDue(amount: unknown, received: unknown): number {
+  const computed = parseFloat((Number(amount) - Number(received)).toFixed(2));
+  return Math.max(0, Number.isFinite(computed) ? computed : 0);
+}
+
+function toMoneyNumber(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return parseFloat(numeric.toFixed(2));
+}
+
+let storeOutstandingBalanceColumnExists: boolean | undefined;
+
+async function hasStoreOutstandingBalanceColumn(tx: any): Promise<boolean> {
+  if (storeOutstandingBalanceColumnExists !== undefined) {
+    return storeOutstandingBalanceColumnExists;
+  }
+
+  const rows = await tx.$queryRaw`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'stores'
+      AND COLUMN_NAME = 'outstandingBalance'
+    LIMIT 1
+  `;
+
+  storeOutstandingBalanceColumnExists = Array.isArray(rows) && rows.length > 0;
+  return storeOutstandingBalanceColumnExists;
+}
+
+async function recomputeStoreOutstandingBalance(tx: any, storeId: string): Promise<number> {
+  const aggregate = await tx.invoice.aggregate({
+    where: {
+      storeId,
+      status: { not: 'cancelled' },
+      balanceDue: { gt: 0 },
+    },
+    _sum: { balanceDue: true },
+  });
+
+  const outstandingBalance = toMoneyNumber(aggregate?._sum?.balanceDue);
+  const hasOutstandingColumn = await hasStoreOutstandingBalanceColumn(tx);
+
+  if (hasOutstandingColumn) {
+    await tx.$executeRaw`
+      UPDATE stores
+      SET outstandingBalance = ${outstandingBalance.toFixed(2)}
+      WHERE id = ${storeId}
+    `;
+  }
+
+  return outstandingBalance;
+}
+
+async function compileLedgerAggregates(tx: any): Promise<void> {
+  await Promise.all([
+    tx.invoice.aggregate({
+      where: { status: { not: 'cancelled' } },
+      _sum: { amount: true, received: true, balanceDue: true },
+      _count: { _all: true },
+    }),
+    tx.invoice.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    }),
+    tx.invoice.groupBy({
+      by: ['storeId'],
+      where: {
+        status: { not: 'cancelled' },
+        balanceDue: { gt: 0 },
+      },
+      _sum: { balanceDue: true },
+    }),
+  ]);
+}
+
 function toDTO(record: any): InvoiceDTO {
   return {
     id: record.id,
@@ -38,20 +155,6 @@ function toDTO(record: any): InvoiceDTO {
     createdAt: record.createdAt?.toISOString(),
     updatedAt: record.updatedAt?.toISOString(),
   };
-}
-
-/**
- * Generate the next sequential document number atomically.
- * Uses an upsert on the singleton DocumentCounter row to guarantee no duplicates.
- */
-async function generateDocumentNo(): Promise<string> {
-  const counter = await prisma.documentCounter.upsert({
-    where: { id: 1 },
-    update: { seq: { increment: 1 } },
-    create: { id: 1, prefix: 'INV-', seq: 1, year: new Date().getFullYear() },
-  });
-  const year = counter.year.toString().slice(-2);
-  return `${counter.prefix}${year}${String(counter.seq).padStart(5, '0')}`;
 }
 
 export class InvoiceService {
@@ -137,47 +240,41 @@ export class InvoiceService {
       if (endDate) dateFilter.date.lte = new Date(endDate);
     }
 
-    const invoices = await prisma.invoice.findMany({
-      where: dateFilter,
-      select: {
-        id: true,
-        documentNo: true,
-        amount: true,
-        received: true,
-        balanceDue: true,
-        status: true,
-        date: true,
-      },
+    dateFilter.status = { not: 'cancelled' };
+
+    const [aggregate, statusBuckets] = await Promise.all([
+      prisma.invoice.aggregate({
+        where: dateFilter,
+        _sum: {
+          amount: true,
+          received: true,
+          balanceDue: true,
+        },
+        _count: { _all: true },
+      }),
+      prisma.invoice.groupBy({
+        where: dateFilter,
+        by: ['status'],
+        _count: { _all: true },
+      }),
+    ]);
+
+    const metrics: InvoiceSummary = {
+      totalBilled: toMoneyNumber(aggregate?._sum?.amount),
+      totalReceived: toMoneyNumber(aggregate?._sum?.received),
+      totalOutstanding: toMoneyNumber(aggregate?._sum?.balanceDue),
+      count: aggregate?._count?._all || 0,
+      paidCount: 0,
+      pendingCount: 0,
+      overdueCount: 0,
+      collectionRate: '0.00',
+    };
+
+    statusBuckets.forEach((bucket) => {
+      if (bucket.status === 'paid') metrics.paidCount = bucket._count._all;
+      if (bucket.status === 'pending') metrics.pendingCount = bucket._count._all;
+      if (bucket.status === 'overdue') metrics.overdueCount = bucket._count._all;
     });
-
-    const metrics = invoices.reduce(
-      (acc, inv) => {
-        const amount = Number(inv.amount);
-        const received = Number(inv.received);
-        const balance = Number(inv.balanceDue);
-
-        acc.totalBilled += amount;
-        acc.totalReceived += received;
-        acc.totalOutstanding += balance;
-        acc.count += 1;
-
-        if (inv.status === 'paid') acc.paidCount += 1;
-        else if (inv.status === 'pending') acc.pendingCount += 1;
-        else if (inv.status === 'overdue') acc.overdueCount += 1;
-
-        return acc;
-      },
-      {
-        totalBilled: 0,
-        totalReceived: 0,
-        totalOutstanding: 0,
-        count: 0,
-        paidCount: 0,
-        pendingCount: 0,
-        overdueCount: 0,
-        collectionRate: '0.00',
-      },
-    );
 
     metrics.collectionRate =
       metrics.totalBilled > 0
@@ -229,7 +326,7 @@ export class InvoiceService {
 
   /**
    * POST /api/invoices
-   * Creates an invoice with atomic document number generation.
+    * Creates an invoice with a user-provided document number.
    * If received > 0, automatically creates an initial payment record
    * inside the same transaction.
    */
@@ -240,6 +337,8 @@ export class InvoiceService {
     if (!input.salesPersonId) {
       throw new AppError('salesPersonId is required', 400);
     }
+    const providedDocumentNo = normalizeOptionalText((input as any).documentNo ?? (input as any).docNo) ?? `INV-${Date.now()}`;
+    const safeDescription = normalizeOptionalText(input.description, 'Manual Invoice Entry');
 
     // Verify store and sales person exist
     const [store, salesPerson] = await Promise.all([
@@ -250,8 +349,8 @@ export class InvoiceService {
     if (!store) throw new AppError('Store not found', 400);
     if (!salesPerson) throw new AppError('Sales person not found', 400);
 
-    const amountDecimal = parseFloat(String(input.amount || 0));
-    const receivedDecimal = parseFloat(String(input.received || 0));
+    const amountDecimal = normalizeOptionalNumber(input.amount);
+    const receivedDecimal = normalizeOptionalNumber(input.received);
     const balanceDue = amountDecimal - receivedDecimal;
 
     // Determine status based on payment
@@ -264,27 +363,18 @@ export class InvoiceService {
 
     // Execute everything in a $transaction for atomicity
     const result = await prisma.$transaction(async (tx) => {
-      // Generate document number atomically
-      const counter = await tx.documentCounter.upsert({
-        where: { id: 1 },
-        update: { seq: { increment: 1 } },
-        create: { id: 1, prefix: 'INV-', seq: 1, year: new Date().getFullYear() },
-      });
-      const year = counter.year.toString().slice(-2);
-      const documentNo = `${counter.prefix}${year}${String(counter.seq).padStart(5, '0')}`;
-
       // Create the invoice
       const invoice = await tx.invoice.create({
         data: {
-          documentNo,
+          documentNo: providedDocumentNo,
           date: input.date ? new Date(input.date) : new Date(),
           docType: input.docType || 'Invoice',
-          description: input.description || null,
+          description: safeDescription,
           amount: amountDecimal,
           received: receivedDecimal,
           balanceDue,
           status: invoiceStatus as any,
-          chequeNo: input.chequeNo || null,
+          chequeNo: normalizeOptionalText((input as any).chequeNo) ?? null,
           storeId: input.storeId,
           salesPersonId: input.salesPersonId,
         },
@@ -301,8 +391,8 @@ export class InvoiceService {
             invoiceId: invoice.id,
             date: invoice.date,
             amountPaid: receivedDecimal,
-            description: `Initial payment for ${documentNo}`,
-            paymentMethod: input.chequeNo ? 'cheque' : 'cash',
+            description: `Initial payment for ${providedDocumentNo}`,
+            paymentMethod: resolvePaymentMethodValue(input as any) as any,
             chequeNo: input.chequeNo || null,
           },
         });
@@ -333,11 +423,66 @@ export class InvoiceService {
       throw new AppError('Invoice not found', 404);
     }
 
+    const payload = input as any;
     const updateData: any = {};
-    if (input.description !== undefined) updateData.description = input.description;
-    if (input.chequeNo !== undefined) updateData.chequeNo = input.chequeNo;
-    if (input.status !== undefined) updateData.status = input.status;
-    if (input.date !== undefined) updateData.date = new Date(input.date);
+    if (payload.description !== undefined) updateData.description = payload.description;
+    if (payload.status !== undefined) updateData.status = payload.status;
+    if (payload.docType !== undefined) updateData.docType = payload.docType;
+    if (payload.documentNo !== undefined) updateData.documentNo = String(payload.documentNo).trim();
+    if (payload.docNo !== undefined) updateData.documentNo = String(payload.docNo).trim();
+    if (payload.date !== undefined) updateData.date = new Date(payload.date);
+
+    const existingReceived = toMoneyNumber(existing.received);
+    const amountProvided = payload.amount !== undefined;
+    const receivedProvided = payload.received !== undefined;
+    const receivedAmountProvided = hasNonEmptyValue(payload.receivedAmount);
+    const amountPaidProvided = hasNonEmptyValue(payload.amountPaid);
+    const paymentAmountProvided = hasNonEmptyValue(payload.paymentAmount);
+    const amountDecimal = amountProvided ? toMoneyNumber(payload.amount) : toMoneyNumber(existing.amount);
+    const explicitPaymentAmount = receivedAmountProvided
+      ? toMoneyNumber(payload.receivedAmount)
+      : amountPaidProvided
+        ? toMoneyNumber(payload.amountPaid)
+        : paymentAmountProvided
+          ? toMoneyNumber(payload.paymentAmount)
+          : 0;
+
+    let receivedDecimal = receivedProvided ? toMoneyNumber(payload.received) : existingReceived;
+    if (!receivedProvided && explicitPaymentAmount > 0) {
+      receivedDecimal = toMoneyNumber(existingReceived + explicitPaymentAmount);
+      updateData.received = receivedDecimal;
+    }
+
+    if (amountProvided) updateData.amount = amountDecimal;
+    if (receivedProvided) updateData.received = receivedDecimal;
+    if (amountProvided || receivedProvided || explicitPaymentAmount > 0) {
+      updateData.balanceDue = computeBalanceDue(amountDecimal, receivedDecimal);
+    }
+
+    const chequeTransaction = isChequeTransaction(payload);
+    const normalizedChequeNo = normalizeOptionalText(payload.chequeNo, null);
+    const normalizedBankName = normalizeOptionalText(payload.bankName, null);
+    const normalizedBranchName = normalizeOptionalText(payload.branchName, null);
+
+    if (
+      payload.chequeNo !== undefined ||
+      payload.bankName !== undefined ||
+      payload.branchName !== undefined ||
+      payload.paymentMode !== undefined ||
+      payload.paymentMethod !== undefined ||
+      payload.paymentSelector !== undefined ||
+      payload.bankSlip !== undefined
+    ) {
+      updateData.chequeNo = chequeTransaction ? normalizedChequeNo : null;
+      updateData.bankName = chequeTransaction ? normalizedBankName : null;
+      updateData.branchName = chequeTransaction ? normalizedBranchName : null;
+    }
+
+    if (payload.status === undefined && (amountProvided || receivedProvided || explicitPaymentAmount > 0)) {
+      if (updateData.balanceDue <= 0) updateData.status = 'paid';
+      else if (receivedDecimal > 0) updateData.status = 'pending';
+      else updateData.status = existing.status;
+    }
 
     if (Object.keys(updateData).length === 0) {
       throw new AppError(
@@ -346,14 +491,56 @@ export class InvoiceService {
       );
     }
 
-    const updated = await prisma.invoice.update({
-      where: { id },
-      data: updateData,
-      include: {
-        store: { select: { id: true, name: true } },
-        salesPerson: { select: { id: true, name: true } },
-        payments: { orderBy: { date: 'desc' } },
-      },
+    const receivedDelta = toMoneyNumber(receivedDecimal - existingReceived);
+    const paymentAmountToCreate = receivedDelta > 0
+      ? receivedDelta
+      : explicitPaymentAmount > 0
+        ? explicitPaymentAmount
+        : 0;
+    const paymentMetadataProvided = hasNonEmptyValue(payload.paymentMethod)
+      || hasNonEmptyValue(payload.paymentMode)
+      || hasNonEmptyValue(payload.paymentSelector)
+      || hasNonEmptyValue(payload.bankSlip)
+      || hasNonEmptyValue(payload.chequeNo)
+      || hasNonEmptyValue(payload.bankName)
+      || hasNonEmptyValue(payload.branchName);
+    const shouldCreatePayment = paymentAmountToCreate > 0 && (receivedDelta > 0 || paymentMetadataProvided || explicitPaymentAmount > 0);
+    const paymentMethodValue = resolvePaymentMethodValue(payload);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.invoice.update({
+        where: { id },
+        data: updateData,
+      });
+
+      if (shouldCreatePayment) {
+        await tx.payment.create({
+          data: {
+            invoiceId: id,
+            date: payload.date ? new Date(payload.date) : new Date(),
+            amountPaid: paymentAmountToCreate,
+            description: normalizeOptionalText(payload.paymentDescription, `Payment adjustment for ${existing.documentNo}`),
+            paymentMethod: paymentMethodValue as any,
+            chequeNo: chequeTransaction ? normalizedChequeNo : null,
+            bankName: chequeTransaction ? normalizedBankName : null,
+            branchName: chequeTransaction ? normalizedBranchName : null,
+          },
+        });
+      }
+
+      const updatedInvoice = await tx.invoice.findUnique({
+        where: { id },
+        include: {
+          store: { select: { id: true, name: true } },
+          salesPerson: { select: { id: true, name: true } },
+          payments: { orderBy: { date: 'desc' } },
+        },
+      });
+
+      await recomputeStoreOutstandingBalance(tx, existing.storeId);
+      await compileLedgerAggregates(tx);
+
+      return updatedInvoice;
     });
 
     return toDTO(updated);
@@ -377,15 +564,23 @@ export class InvoiceService {
 
     if (existing._count.payments > 0) {
       // Soft delete — cancel the invoice
-      await prisma.invoice.update({
-        where: { id },
-        data: { status: 'cancelled', balanceDue: 0 },
+      await prisma.$transaction(async (tx) => {
+        await tx.invoice.update({
+          where: { id },
+          data: { status: 'cancelled', balanceDue: 0 },
+        });
+        await recomputeStoreOutstandingBalance(tx, existing.storeId);
+        await compileLedgerAggregates(tx);
       });
       return { softDeleted: true };
     }
 
     // No payments — hard delete
-    await prisma.invoice.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.invoice.delete({ where: { id } });
+      await recomputeStoreOutstandingBalance(tx, existing.storeId);
+      await compileLedgerAggregates(tx);
+    });
     return { softDeleted: false };
   }
 }
