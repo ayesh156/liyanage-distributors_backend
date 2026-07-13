@@ -19,6 +19,12 @@ function normalizeRouteId(value) {
   return numeric;
 }
 
+function toMoneyNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return parseFloat(numeric.toFixed(2));
+}
+
 async function resolveRouteId(routeIdInput, routeNameInput) {
   const normalizedRouteId = normalizeRouteId(routeIdInput);
   if (normalizedRouteId) {
@@ -99,9 +105,44 @@ const storeController = {
         prisma.store.count({ where }),
       ]);
 
+      const storeIds = stores.map((store) => store.id);
+      const storePaymentRows = storeIds.length > 0
+        ? await prisma.payment.findMany({
+            where: {
+              invoice: {
+                storeId: { in: storeIds },
+              },
+            },
+            select: {
+              amountPaid: true,
+              invoice: {
+                select: { storeId: true },
+              },
+            },
+          })
+        : [];
+
+      const totalPaidByStoreId = storePaymentRows.reduce((accumulator, paymentRow) => {
+        const storeId = paymentRow.invoice?.storeId;
+        if (!storeId) return accumulator;
+
+        const nextTotal = toMoneyNumber((accumulator.get(storeId) || 0) + Number(paymentRow.amountPaid || 0));
+        accumulator.set(storeId, nextTotal);
+        return accumulator;
+      }, new Map());
+
+      const storesWithBalances = stores.map((store) => {
+        const totalPaid = totalPaidByStoreId.get(store.id) || 0;
+        return {
+          ...store,
+          totalPaid,
+          totalPayments: totalPaid,
+        };
+      });
+
       res.json({
         success: true,
-        data: stores,
+        data: storesWithBalances,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
