@@ -227,15 +227,14 @@ const storeController = {
       const existingStore = await prisma.store.findFirst({
         where: {
           name: normalizedName,
-          address: normalizedAddress || null,
         },
-        select: { id: true, name: true, address: true },
+        select: { id: true, name: true },
       });
 
       if (existingStore) {
         return res.status(409).json({
           success: false,
-          error: 'A store with the same name and address already exists',
+          error: 'Store name already exists',
         });
       }
 

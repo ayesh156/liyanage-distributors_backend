@@ -106,15 +106,32 @@ const salesPersonController = {
   async create(req, res) {
     try {
       const { name, phone, nic, email, address } = req.body;
+      const normalizedName = String(name || '').trim();
+      const normalizedPhone = String(phone || '').trim() || null;
 
-      if (!name || name.trim().length === 0) {
+      if (!normalizedName) {
         return res.status(400).json({ success: false, error: 'Sales person name is required' });
+      }
+
+      const duplicateRecord = await prisma.salesPerson.findFirst({
+        where: {
+          name: normalizedName,
+          phone: normalizedPhone,
+        },
+        select: { id: true },
+      });
+
+      if (duplicateRecord) {
+        return res.status(409).json({
+          success: false,
+          error: 'Sales person with this name and phone number already exists',
+        });
       }
 
       const salesPerson = await prisma.salesPerson.create({
         data: {
-          name: name.trim(),
-          phone: String(phone || '').trim() || null,
+          name: normalizedName,
+          phone: normalizedPhone,
           nic: String(nic || '').trim() || null,
           email: String(email || '').trim() || null,
           address: String(address || '').trim() || null,
