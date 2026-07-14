@@ -20,6 +20,12 @@ function normalizeOptionalText(value, fallback = null) {
   return text.length > 0 ? text : fallback;
 }
 
+function stripTrailingNoToken(value) {
+  const normalized = normalizeOptionalText(value, null);
+  if (!normalized) return normalized;
+  return normalized.replace(/_no$/i, '').trim();
+}
+
 function normalizeOptionalNumber(value) {
   if (value === null || value === undefined || value === '') return 0;
   const numeric = Number(value);
@@ -532,9 +538,9 @@ const invoiceController = {
         return res.status(400).json({ success: false, error: 'salesPersonId is required' });
       }
 
-      const normalizedDocumentNo = normalizeOptionalText(documentNo ?? docNo, null) || `INV-${Date.now()}`;
+      const normalizedDocumentNo = stripTrailingNoToken(documentNo ?? docNo) || `INV-${Date.now()}`;
       const safeDocumentNo = await resolveUniqueInvoiceDocumentNo(normalizedDocumentNo);
-      const safeDescription = normalizeOptionalText(description, 'Manual Invoice Entry');
+      const safeDescription = stripTrailingNoToken(description) || 'Manual Invoice Entry';
 
       // Verify store and sales person exist
       const [store, salesPerson] = await Promise.all([
@@ -647,11 +653,11 @@ const invoiceController = {
       }
 
       const updateData = {};
-      if (description !== undefined) updateData.description = description;
+      if (description !== undefined) updateData.description = stripTrailingNoToken(description);
       if (status !== undefined) updateData.status = status;
       if (docType !== undefined) updateData.docType = docType;
-      if (documentNo !== undefined) updateData.documentNo = String(documentNo).trim();
-      if (docNo !== undefined) updateData.documentNo = String(docNo).trim();
+      if (documentNo !== undefined) updateData.documentNo = stripTrailingNoToken(documentNo);
+      if (docNo !== undefined) updateData.documentNo = stripTrailingNoToken(docNo);
       if (date !== undefined) updateData.date = new Date(date);
 
       const existingReceived = toMoneyNumber(existing.received);
