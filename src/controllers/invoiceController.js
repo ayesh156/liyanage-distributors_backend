@@ -242,7 +242,7 @@ const invoiceController = {
             salesPerson: { select: { id: true, name: true } },
             payments: {
               orderBy: { date: 'desc' },
-              select: { id: true, date: true, amountPaid: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
+              select: { id: true, date: true, amountPaid: true, description: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
             },
           },
         }),
@@ -352,7 +352,7 @@ const invoiceController = {
           },
           payments: {
             orderBy: { date: 'asc' },
-            select: { id: true, date: true, amountPaid: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
+            select: { id: true, date: true, amountPaid: true, description: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
           },
         },
       });
@@ -540,7 +540,7 @@ const invoiceController = {
 
       const normalizedDocumentNo = stripTrailingNoToken(documentNo ?? docNo) || `INV-${Date.now()}`;
       const safeDocumentNo = await resolveUniqueInvoiceDocumentNo(normalizedDocumentNo);
-      const safeDescription = stripTrailingNoToken(description) || 'Manual Invoice Entry';
+      const safeDescription = stripTrailingNoToken(description);
 
       // Verify store and sales person exist
       const [store, salesPerson] = await Promise.all([
@@ -601,7 +601,7 @@ const invoiceController = {
             invoiceId: invoice.id,
             date: invoice.date,
             amountPaid: receivedDecimal,
-            description: `Initial payment for ${safeDocumentNo}`,
+            description: safeDescription,
             paymentMethod: resolvedPaymentMethod,
             chequeNo: isBankBasedMethod ? normalizedChequeNo : null,
             bankName: isBankBasedMethod ? normalizedBankName : null,
@@ -752,7 +752,7 @@ const invoiceController = {
               invoiceId: id,
               date: date ? new Date(date) : new Date(),
               amountPaid: paymentAmountToCreate,
-              description: normalizeOptionalText(paymentDescription, `Payment adjustment for ${existing.documentNo}`),
+              description: normalizeOptionalText(paymentDescription),
               paymentMethod: paymentMethodValue,
               chequeNo: paymentIsBankBased ? normalizedChequeNo : null,
               bankName: paymentIsBankBased ? normalizedBankName : null,
@@ -768,7 +768,7 @@ const invoiceController = {
             salesPerson: { select: { id: true, name: true } },
             payments: {
               orderBy: { date: 'desc' },
-              select: { id: true, date: true, amountPaid: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
+              select: { id: true, date: true, amountPaid: true, description: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
             },
           },
         });

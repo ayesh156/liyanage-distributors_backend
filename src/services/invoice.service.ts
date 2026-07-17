@@ -338,7 +338,7 @@ export class InvoiceService {
       throw new AppError('salesPersonId is required', 400);
     }
     const providedDocumentNo = normalizeOptionalText((input as any).documentNo ?? (input as any).docNo) ?? `INV-${Date.now()}`;
-    const safeDescription = normalizeOptionalText(input.description, 'Manual Invoice Entry');
+    const safeDescription = normalizeOptionalText(input.description);
 
     // Verify store and sales person exist
     const [store, salesPerson] = await Promise.all([
@@ -391,7 +391,7 @@ export class InvoiceService {
             invoiceId: invoice.id,
             date: invoice.date,
             amountPaid: receivedDecimal,
-            description: `Initial payment for ${providedDocumentNo}`,
+            description: safeDescription,
             paymentMethod: resolvePaymentMethodValue(input as any) as any,
             chequeNo: input.chequeNo || null,
           },
@@ -519,7 +519,7 @@ export class InvoiceService {
             invoiceId: id,
             date: payload.date ? new Date(payload.date) : new Date(),
             amountPaid: paymentAmountToCreate,
-            description: normalizeOptionalText(payload.paymentDescription, `Payment adjustment for ${existing.documentNo}`),
+            description: normalizeOptionalText(payload.paymentDescription),
             paymentMethod: paymentMethodValue as any,
             chequeNo: chequeTransaction ? normalizedChequeNo : null,
             bankName: chequeTransaction ? normalizedBankName : null,
