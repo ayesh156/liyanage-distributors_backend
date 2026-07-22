@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import compression from 'compression';
 import router from './routes/index.js';
 import { testConnection } from './config/database.js';
 
@@ -63,6 +64,11 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// ── Gzip Compression ─────────────────────────────────────────
+// Compresses responses > 1 KB — critical for large /reports/* payloads.
+// Must be registered BEFORE the body parsers and route handlers.
+app.use(compression({ threshold: 1024 }));
 
 // ── Body Parsing ─────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
