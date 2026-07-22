@@ -325,8 +325,7 @@ const paymentController = {
         // 2. Validate: prevent over-collection beyond balance due
         if (payAmount > currentBalance) {
           throw new Error(
-            `Payment amount (${payAmount.toFixed(2)}) exceeds outstanding balance (${currentBalance.toFixed(2)}). ` +
-            `Maximum collectible: ${currentBalance.toFixed(2)}`
+            `Payment amount exceeds the outstanding invoice balance.`
           );
         }
 

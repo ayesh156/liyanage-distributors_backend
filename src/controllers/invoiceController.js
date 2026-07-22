@@ -652,6 +652,20 @@ const invoiceController = {
         return res.status(404).json({ success: false, error: 'Invoice not found' });
       }
 
+      // ── INVOICE EDIT OVERPAYMENT GUARD: Prevent received > amount ──────────
+      if (received !== undefined && amount !== undefined && Number(received) > Number(amount)) {
+        return res.status(400).json({
+          success: false,
+          message: "Received payment cannot be greater than total invoice amount.",
+        });
+      }
+      if (received !== undefined && amount === undefined && Number(received) > Number(existing.amount)) {
+        return res.status(400).json({
+          success: false,
+          message: "Received payment cannot be greater than total invoice amount.",
+        });
+      }
+
       const updateData = {};
       if (description !== undefined) updateData.description = stripTrailingNoToken(description);
       if (status !== undefined) updateData.status = status;
