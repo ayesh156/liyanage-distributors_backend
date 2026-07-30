@@ -670,8 +670,38 @@ const invoiceController = {
       if (description !== undefined) updateData.description = stripTrailingNoToken(description);
       if (status !== undefined) updateData.status = status;
       if (docType !== undefined) updateData.docType = docType;
-      if (documentNo !== undefined) updateData.documentNo = stripTrailingNoToken(documentNo);
-      if (docNo !== undefined) updateData.documentNo = stripTrailingNoToken(docNo);
+
+      // ── Document Number Handling ──────────────────────────────────
+      // Safe-guard: if documentNo is provided, only update if it differs
+      // from the existing value AND no other invoice already uses it.
+      const resolvedDocNo =
+        (documentNo !== undefined ? stripTrailingNoToken(documentNo) : undefined) ??
+        (docNo !== undefined ? stripTrailingNoToken(docNo) : undefined);
+
+      if (resolvedDocNo !== undefined) {
+        const existingDocNo = normalizeOptionalText(existing.documentNo);
+        const incomingDocNo = normalizeOptionalText(resolvedDocNo);
+
+        if (incomingDocNo !== existingDocNo) {
+          // documentNo is being changed — check for duplicate
+          const duplicate = await prisma.invoice.findUnique({
+            where: { documentNo: incomingDocNo },
+            select: { id: true },
+          });
+
+          if (duplicate) {
+            return res.status(400).json({
+              success: false,
+              message: "Document number already in use",
+            });
+          }
+
+          updateData.documentNo = incomingDocNo;
+        }
+        // If incomingDocNo === existingDocNo, simply omit documentNo
+        // from the update payload to avoid triggering the unique constraint.
+      }
+      // ── End Document Number Handling ──────────────────────────────
       if (date !== undefined) updateData.date = new Date(date);
 
       const existingReceived = toMoneyNumber(existing.received);
