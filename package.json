@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.js",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit && tsup src/index.js --outDir dist --format cjs --out-extension .js=.js --clean --sourcemap",
+    "build": "tsc --noEmit && tsup src/index.js --outDir dist --format cjs --clean --sourcemap && cp dist/index.cjs dist/index.js",
     "start": "node dist/index.js",
     "postinstall": "npx prisma generate",
     "db:generate": "npx prisma generate",
