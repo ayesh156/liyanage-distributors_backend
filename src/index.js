@@ -1,8 +1,10 @@
 import 'dotenv/config';
+import { createServer } from 'http';
 import express from 'express';
 import compression from 'compression';
 import router from './routes/index.js';
 import { testConnection } from './config/database.js';
+import prisma from './lib/prisma.js';
 
 // ─────────────────────────────────────────────────────────────
 // LIYANAGE DISTRIBUTORS - PRODUCTION REST API SERVER
@@ -104,11 +106,17 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ── Start Server ─────────────────────────────────────────────
+// ── HTTP Server & OpenLiteSpeed lsnode Dual Support ───────────
+const httpServer = createServer(app);
+
+// OpenLiteSpeed lsnode pipe socket සහ Local Port dual-support
+const isLSNode = Boolean(process.env.LSAPI_CHILDREN);
+const LISTEN_PORT = isLSNode ? undefined : (process.env.PORT ? parseInt(process.env.PORT, 10) : 3003);
+
 async function startServer() {
   console.log('\n═══════════════════════════════════════════════');
   console.log('  LIYANAGE DISTRIBUTORS - REST API');
-  console.log('  Ledger Management System v1.0.0');
+  console.log('  Ledger Management System (Production lsnode)');
   console.log('═══════════════════════════════════════════════\n');
 
   // Test database connection
@@ -118,15 +126,55 @@ async function startServer() {
     console.error('   Make sure MySQL/MariaDB is running and DATABASE_URL is correct.\n');
   }
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`   Health:     http://localhost:${PORT}/api/health`);
-    console.log(`   Stores:     http://localhost:${PORT}/api/stores`);
-    console.log(`   Invoices:   http://localhost:${PORT}/api/invoices`);
-    console.log(`   Payments:   http://localhost:${PORT}/api/payments`);
-    console.log(`   SalesPersons: http://localhost:${PORT}/api/sales-persons\n`);
-  });
+  if (LISTEN_PORT) {
+    // Standard TCP Port Mode (Local Development / Standalone Node)
+    httpServer.listen(LISTEN_PORT, () => {
+      console.log(`🚀 Server running on http://localhost:${LISTEN_PORT}`);
+      console.log(`   Health:     http://localhost:${LISTEN_PORT}/api/health`);
+      console.log(`   Stores:     http://localhost:${LISTEN_PORT}/api/stores`);
+      console.log(`   Invoices:   http://localhost:${LISTEN_PORT}/api/invoices`);
+      console.log(`   Payments:   http://localhost:${LISTEN_PORT}/api/payments\n`);
+    });
+  } else {
+    // OpenLiteSpeed lsnode Native pipe mode
+    httpServer.listen(() => {
+      console.log('🚀 Liyanage Distributors API started via OpenLiteSpeed lsnode pipe');
+    });
+  }
 }
+
+// ── Graceful Shutdown (Zombie processes සහ MariaDB connection leaks වැළැක්වීමට) ──
+let isShuttingDown = false;
+async function handleGracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`\n[lsnode] Received ${signal}. Closing HTTP server and database gracefully...`);
+
+  httpServer.close(async () => {
+    try {
+      if (prisma && typeof prisma.$disconnect === 'function') {
+        await prisma.$disconnect();
+      }
+      console.log('[lsnode] Database disconnected. Exiting cleanly.');
+      process.exit(0);
+    } catch (err) {
+      console.error('[lsnode] Disconnect error:', err);
+      process.exit(1);
+    }
+  });
+
+  // Force exit safety timer (5s)
+  setTimeout(() => {
+    console.error('[lsnode] Force exiting after 5s timeout.');
+    process.exit(1);
+  }, 5000).unref();
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
+process.on('unhandledRejection', (reason) => console.error('[lsnode] Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('[lsnode] Uncaught Exception:', err));
 
 startServer();
 

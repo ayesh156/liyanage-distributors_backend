@@ -75,16 +75,15 @@ export class StoreService {
 
   /**
    * GET /api/stores/routes
-   * List all unique delivery routes.
+   * List all unique delivery routes from the Route model.
    */
   static async listRoutes(): Promise<string[]> {
-    const routes = await prisma.store.findMany({
-      where: { route: { not: null } },
-      select: { route: true },
-      distinct: ['route'],
-      orderBy: { route: 'asc' },
+    // 🌟 Prisma Route model එකෙන් සෘජුවම unique route නම් ලබා ගැනීම
+    const routes = await (prisma as any).route.findMany({
+      select: { name: true },
+      orderBy: { name: 'asc' },
     });
-    return routes.map((r) => r.route as string).filter(Boolean);
+    return routes.map((r: { name: string }) => r.name).filter(Boolean);
   }
 
   /**
@@ -139,12 +138,15 @@ export class StoreService {
       data: {
         name: input.name.trim(),
         address: input.address ?? null,
-        route: input.route ?? null,
+        // 🌟 Route relation handling: Route name එකක් තිබේ නම් connect කිරීම
+        ...(input.route
+          ? { route: { connect: { name: input.route } } }
+          : {}),
         phone: input.phone ?? null,
         salesPerson: normalizedSalesPersonId
           ? { connect: { id: normalizedSalesPersonId } }
           : undefined,
-      },
+      } as any,
       include: {
         _count: { select: { invoices: true } },
         salesPerson: { select: { id: true, name: true, phone: true } },
