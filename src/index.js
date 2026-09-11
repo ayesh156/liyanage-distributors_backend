@@ -15,7 +15,7 @@ import prisma from './lib/prisma.js';
 const app = express();
 app.set('trust proxy', 1);
 
-// ── BULLETPROOF STANDARD CORS CONFIGURATION ──────────────────
+// ── BULLETPROOF CORS CONFIGURATION ───────────────────────────
 const allowedOrigins = [
   'https://lhdd.ecosystemlk.app',
   'https://api.lhdd.ecosystemlk.app',
@@ -26,22 +26,27 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // allow requests with no origin (like mobile apps, curl, or server-to-server)
+    // 1. Mobile apps, curl, or same-origin (no origin header) allow කිරීම
     if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
+
+    const cleanOrigin = origin.replace(/\/+$/, '');
+    const isAllowed = allowedOrigins.some(item => cleanOrigin === item.replace(/\/+$/, '')) ||
+                      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin);
+
+    if (isAllowed) {
+      return callback(null, cleanOrigin);
     }
+
+    // 2. [CRITICAL] කිසිවිටෙක new Error() throw නොකරන්න!
+    // Safe fallback එකක් ලෙස primary frontend එක echo කරන්න:
+    return callback(null, 'https://lhdd.ecosystemlk.app');
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With', 'Accept'],
   exposedHeaders: ['Set-Cookie'],
   maxAge: 86400
 }));
-
 // ── Gzip Compression ─────────────────────────────────────────
 // Compresses responses > 1 KB — critical for large /reports/* payloads.
 app.use(compression({ threshold: 1024 }));
@@ -73,7 +78,14 @@ app.use((req, res) => {
 
 // ── Global Error Handler ─────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  console.error('[lsnode] Unhandled Error:', err);
+
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+
   res.status(err.status || 500).json({
     success: false,
     error: err.message || 'Internal server error',
