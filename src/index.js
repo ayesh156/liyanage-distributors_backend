@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { createServer } from 'http';
 import express from 'express';
 import compression from 'compression';
+import cors from 'cors';
 import router from './routes/index.js';
 import { testConnection } from './config/database.js';
 import prisma from './lib/prisma.js';
@@ -12,64 +13,27 @@ import prisma from './lib/prisma.js';
 // ─────────────────────────────────────────────────────────────
 
 const app = express();
-app.set('trust proxy', true);
-const PORT = parseInt(process.env.PORT || '3003', 10);
+app.set('trust proxy', 1);
 
-// ── BULLETPROOF DYNAMIC CORS & PREFLIGHT CONFIGURATION ───────
-const allowedOrigins = [
-  'https://lhdd.ecosystemlk.app',
-  'https://api.lhdd.ecosystemlk.app', // 👈 API Domain එක හරහා එන proxy Handshakes සඳහා අනිවාර්යයි
-  'http://localhost:5173',
-  'http://localhost:3003'
-];
-
-/**
- * incoming Request එකේ Origin එක Whitelist එකේ තියෙනවාදැයි පරීක්ෂා කිරීම.
- */
-function isOriginAllowed(origin) {
-  if (!origin) return false;
-  if (/^https?:\/\/localhost(:\d+)?$/i.test(origin)) return true;
-  if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(origin)) return true;
-  if (/^https:\/\/lhdd\.ecosystemlk\.app\/?$/i.test(origin)) return true;
-  if (/^https:\/\/api\.lhdd\.ecosystemlk\.app\/?$/i.test(origin)) return true;
-  return false;
-}
-
-/**
- * Custom CORS Middleware Layer - Zero Header Dropouts වළක්වයි
- */
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-
-  // Inform downstream proxies/caches that response varies by Origin
-  res.setHeader('Vary', 'Origin');
-
-  if (origin && isOriginAllowed(origin)) {
-    // Whitelist එකේ තියෙනවා නම් ඒ origin එකම echo කරයි
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
-  } else {
-    // Proxy handshakes වලදී origin එක masked වුවහොත් fallback එකක් ලෙස ක්‍රියා කරයි
-    res.setHeader('Access-Control-Allow-Origin', 'https://lhdd.ecosystemlk.app');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Expose-Headers', 'Set-Cookie');
-  }
-
-  // ── OPTIONS Preflight Handling — සැනින් 204 Return කරයි ──
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
-    res.setHeader('Access-Control-Max-Age', '86400'); // 24 Hours cache duration
-    return res.status(204).end();
-  }
-
-  next();
-});
+// ── BULLETPROOF STANDARD CORS CONFIGURATION ──────────────────
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3003',
+    'https://lhdd.ecosystemlk.app',
+    'https://api.lhdd.ecosystemlk.app',
+    process.env.CORS_ORIGIN || ''
+  ].filter(Boolean),
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With'],
+  exposedHeaders: ['Set-Cookie'],
+  maxAge: 86400 // 24 Hours preflight cache
+}));
 
 // ── Gzip Compression ─────────────────────────────────────────
 // Compresses responses > 1 KB — critical for large /reports/* payloads.
-// Must be registered BEFORE the body parsers and route handlers.
 app.use(compression({ threshold: 1024 }));
 
 // ── Body Parsing ─────────────────────────────────────────────
@@ -156,7 +120,7 @@ async function handleGracefulShutdown(signal) {
       if (prisma && typeof prisma.$disconnect === 'function') {
         await prisma.$disconnect();
       }
-      console.log('[lsnode] Database disconnected. Exiting cleanly.');
+      console.log('[lsnode] Database disconnected cleanly.');
       process.exit(0);
     } catch (err) {
       console.error('[lsnode] Disconnect error:', err);
@@ -173,7 +137,7 @@ async function handleGracefulShutdown(signal) {
 
 process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
-process.on('unhandledRejection', (reason) => console.error('[lsnode] Unhandled Rejection:', reason));
+process.on('unhandledRejection', (reason) => console.error('[lsnode] Unhandled Promise Rejection:', reason));
 process.on('uncaughtException', (err) => console.error('[lsnode] Uncaught Exception:', err));
 
 startServer();
