@@ -105,9 +105,11 @@ async function startServer() {
   console.log('  Ledger Management System (Production lsnode)');
   console.log('═══════════════════════════════════════════════\n');
 
-  // Test database connection
+  // Test database connection with connection pool details
   const connected = await testConnection();
-  if (!connected) {
+  if (connected) {
+    console.log('✅ MariaDB Connected successfully (Adapter: PrismaMariaDb, Max Pool: 5)');
+  } else {
     console.error('⚠️  Server will start, but database is unavailable.');
     console.error('   Make sure MySQL/MariaDB is running and DATABASE_URL is correct.\n');
   }

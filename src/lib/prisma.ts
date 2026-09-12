@@ -6,7 +6,9 @@ import { PrismaMariaDb } from '@prisma/adapter-mariadb';
  * Singleton Prisma client for the entire application.
  * Uses the MariaDB adapter with explicit connection pooling and timeout thresholds.
  */
-const globalForPrisma = globalThis;
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
 
 const rawUrl = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/liyanage_backend';
 const parsedUrl = new URL(rawUrl);
