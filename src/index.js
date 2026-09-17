@@ -4,8 +4,8 @@ import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
 import router from './routes/index.js';
-import { testConnection } from './config/database.js';
-import prisma from './lib/prisma.js';
+// Universal Connection Pool සහිත prisma instance සහ handlers කෙලින්ම lib වෙතින් ලබා ගැනීම
+import prisma, { connectDB, isDbConnected } from './lib/prisma.js';
 
 // ─────────────────────────────────────────────────────────────
 // LIYANAGE DISTRIBUTORS - PRODUCTION REST API SERVER
@@ -105,10 +105,11 @@ async function startServer() {
   console.log('  Ledger Management System (Production lsnode)');
   console.log('═══════════════════════════════════════════════\n');
 
-  // Test database connection with connection pool details
-  const connected = await testConnection();
+  // Universal Connection Pool (Pool: 5, Timeout: 15s) මඟින් Database handshake එක සිදු කිරීම
+  await connectDB();
+  const connected = isDbConnected();
   if (connected) {
-    console.log('✅ MariaDB Connected successfully (Adapter: PrismaMariaDb, Max Pool: 5)');
+    console.log('✅ MariaDB Connected successfully (Pool: 5, Timeout: 15s)');
   } else {
     console.error('⚠️  Server will start, but database is unavailable.');
     console.error('   Make sure MySQL/MariaDB is running and DATABASE_URL is correct.\n');

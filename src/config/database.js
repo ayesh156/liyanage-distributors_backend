@@ -1,4 +1,5 @@
-import prisma from './prisma.js';
+// Native Connection Pool සහ Singleton Cache සහිත Universal Prisma instance එක import කිරීම
+import prisma, { isDbConnected, connectDB } from '../lib/prisma.ts';
 
 /**
  * Database initialization and health check utility.
