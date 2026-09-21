@@ -1,26 +1,38 @@
-import prisma from '../config/prisma.js';
-import authService from '../services/authService.js';
+﻿import type { NextFunction, Request, Response } from 'express';
+import prisma from '../lib/prisma.ts';
+import authService from '../services/authService.ts';
 
-export async function authMiddleware(req, res, next) {
+/**
+ * Authenticates requests using the JWT access token.
+ */
+export async function authMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   try {
     const token = authService.extractToken(req);
+
     if (!token) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
         error: 'Access denied. No token provided.',
       });
+      return;
     }
 
     const decoded = authService.verifyToken(token);
+
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
     });
 
     if (!user) {
-      return res.status(401).json({
+      res.status(401).json({
         success: false,
         error: 'Invalid token user',
       });
+      return;
     }
 
     req.user = {
@@ -29,9 +41,9 @@ export async function authMiddleware(req, res, next) {
       role: user.role,
     };
 
-    return next();
+    next();
   } catch (_error) {
-    return res.status(401).json({
+    res.status(401).json({
       success: false,
       error: 'Invalid or expired token',
     });

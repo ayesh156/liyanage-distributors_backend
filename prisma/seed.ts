@@ -16,8 +16,8 @@ if (!adapterUrl) {
   console.error('   Create a .env file with: DATABASE_URL="mysql://root:password@localhost:3306/liyanage_distributors"');
   process.exit(1);
 }
-const prisma = new PrismaClient({
-  adapter: new PrismaMariaDb(adapterUrl),
+const prisma = new (PrismaClient as any)({
+  adapter: new PrismaMariaDb(adapterUrl) as any,
 });
 
 async function main() {
@@ -213,7 +213,7 @@ async function main() {
   let createdInvoiceCount = 0;
 
   // Helper to create an invoice with optional payments
-  async function createInvoiceWithPayments(invoiceData) {
+  async function createInvoiceWithPayments(invoiceData: any) {
     const {
       documentNo,
       date,

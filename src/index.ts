@@ -1,21 +1,21 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import { createServer } from 'http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import router from './routes/index.js';
-// Universal Connection Pool සහිත prisma instance සහ handlers කෙලින්ම lib වෙතින් ලබා ගැනීම
-import prisma, { connectDB, isDbConnected } from './lib/prisma.js';
+import router from './routes/index.ts';
+// Import singleton Prisma instance and connection handlers
+import prisma, { connectDB, isDbConnected } from './lib/prisma.ts';
 
-// ─────────────────────────────────────────────────────────────
+// -------------------------------------------------------------
 // LIYANAGE DISTRIBUTORS - PRODUCTION REST API SERVER
 // Express MVC Backend for Ledger Management System
-// ─────────────────────────────────────────────────────────────
+// -------------------------------------------------------------
 
 const app = express();
 app.set('trust proxy', 1);
 
-// ── BULLETPROOF CORS CONFIGURATION ───────────────────────────
+// â”€â”€ BULLETPROOF CORS CONFIGURATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const allowedOrigins = [
   'https://lhdd.ecosystemlk.app',
   'https://api.lhdd.ecosystemlk.app',
@@ -25,20 +25,19 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // 1. Mobile apps, curl, or same-origin (no origin header) allow කිරීම
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
+    // 1. Allow mobile apps, curl, or same-origin (requests without Origin header)
     if (!origin) return callback(null, true);
 
     const cleanOrigin = origin.replace(/\/+$/, '');
     const isAllowed = allowedOrigins.some(item => cleanOrigin === item.replace(/\/+$/, '')) ||
-                      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin);
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin);
 
     if (isAllowed) {
       return callback(null, cleanOrigin);
     }
 
-    // 2. [CRITICAL] කිසිවිටෙක new Error() throw නොකරන්න!
-    // Safe fallback එකක් ලෙස primary frontend එක echo කරන්න:
+    // 2. Fallback without throwing new Error() to prevent OLS worker crash
     return callback(null, 'https://lhdd.ecosystemlk.app');
   },
   credentials: true,
@@ -47,28 +46,29 @@ app.use(cors({
   exposedHeaders: ['Set-Cookie'],
   maxAge: 86400
 }));
-// ── Gzip Compression ─────────────────────────────────────────
-// Compresses responses > 1 KB — critical for large /reports/* payloads.
+
+// --- Gzip Compression ---
+// Compresses responses > 1 KB - critical for large /reports/* payloads
 app.use(compression({ threshold: 1024 }));
 
-// ── Body Parsing ─────────────────────────────────────────────
+// --- Body Parsing ---
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── Request Logging ──────────────────────────────────────────
+// --- Request Logging ---
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`[${req.method}] ${req.originalUrl} → ${res.statusCode} (${duration}ms)`);
+    console.log(`[${req.method}] ${req.originalUrl} -> ${res.statusCode} (${duration}ms)`);
   });
   next();
 });
 
-// ── API Routes ───────────────────────────────────────────────
+// â”€â”€ API Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use('/api', router);
 
-// ── 404 Handler ──────────────────────────────────────────────
+// â”€â”€ 404 Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -76,8 +76,8 @@ app.use((req, res) => {
   });
 });
 
-// ── Global Error Handler ─────────────────────────────────────
-app.use((err, req, res, next) => {
+// --- Global Error Handler ---
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[lsnode] Unhandled Error:', err);
 
   const origin = req.headers.origin;
@@ -92,33 +92,32 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ── HTTP Server & OpenLiteSpeed lsnode Dual Support ───────────
+// â”€â”€ HTTP Server & OpenLiteSpeed lsnode Dual Support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const httpServer = createServer(app);
 
-// OpenLiteSpeed lsnode pipe socket සහ Local Port dual-support
+// OpenLiteSpeed lsnode pipe socket à·ƒà·„ Local Port dual-support
 const isLSNode = Boolean(process.env.LSAPI_CHILDREN);
 const LISTEN_PORT = isLSNode ? undefined : (process.env.PORT ? parseInt(process.env.PORT, 10) : 3003);
 
 async function startServer() {
-  console.log('\n═══════════════════════════════════════════════');
+  console.log('\n=============================================================');
   console.log('  LIYANAGE DISTRIBUTORS - REST API');
   console.log('  Ledger Management System (Production lsnode)');
-  console.log('═══════════════════════════════════════════════\n');
+  console.log('=============================================================\n');
 
-  // Universal Connection Pool (Pool: 5, Timeout: 15s) මඟින් Database handshake එක සිදු කිරීම
+  // Establish MariaDB connection pool handshake (Pool limit: 5)
   await connectDB();
   const connected = isDbConnected();
   if (connected) {
-    console.log('✅ MariaDB Connected successfully (Pool: 5, Timeout: 15s)');
+    console.log('[db] MariaDB connected successfully (Pool limit: 5)');
   } else {
-    console.error('⚠️  Server will start, but database is unavailable.');
-    console.error('   Make sure MySQL/MariaDB is running and DATABASE_URL is correct.\n');
+    console.error('[warn] Database unavailable. Verify connection string.');
   }
 
   if (LISTEN_PORT) {
     // Standard TCP Port Mode (Local Development / Standalone Node)
     httpServer.listen(LISTEN_PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${LISTEN_PORT}`);
+      console.log(`[server] Running on http://localhost:${LISTEN_PORT}`);
       console.log(`   Health:     http://localhost:${LISTEN_PORT}/api/health`);
       console.log(`   Stores:     http://localhost:${LISTEN_PORT}/api/stores`);
       console.log(`   Invoices:   http://localhost:${LISTEN_PORT}/api/invoices`);
@@ -127,14 +126,14 @@ async function startServer() {
   } else {
     // OpenLiteSpeed lsnode Native pipe mode
     httpServer.listen(() => {
-      console.log('🚀 Liyanage Distributors API started via OpenLiteSpeed lsnode pipe');
+      console.log('[server] Liyanage Distributors API started via OpenLiteSpeed lsnode pipe');
     });
   }
 }
 
-// ── Graceful Shutdown (Zombie processes සහ MariaDB connection leaks වැළැක්වීමට) ──
+// --- Graceful Shutdown (Prevents zombie processes and DB connection leaks) ---
 let isShuttingDown = false;
-async function handleGracefulShutdown(signal) {
+async function handleGracefulShutdown(signal: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 

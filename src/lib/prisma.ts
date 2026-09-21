@@ -1,14 +1,19 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
 
 const rawUrl = process.env.DATABASE_URL;
+
 if (!rawUrl) {
-  throw new Error('❌ Critical Architecture Error: DATABASE_URL is missing in environment variables.');
+  throw new Error(
+    'Critical architecture error: DATABASE_URL is missing in environment variables.',
+  );
 }
 
-// අනාගත Load Balancing සහ Spikes වලට මුහුණ දීම සඳහා URL එක මඟින්ම Native Params සැකසීම
+// Prisma connection-pool parameters are configured here for production load and connection stability.
 const dbUrl = new URL(rawUrl);
 dbUrl.searchParams.set('connection_limit', '15');
 dbUrl.searchParams.set('connect_timeout', '20');
@@ -22,11 +27,13 @@ export const prisma =
         url: dbUrl.toString(),
       },
     },
-    // Heavy load එකකදී performance බැලීමට warnings පමණක් log කිරීම
-    log: process.env.NODE_ENV === 'development' ? ['query', 'warn', 'error'] : ['warn', 'error'],
+    log:
+      process.env.NODE_ENV === 'development'
+        ? ['query', 'warn', 'error']
+        : ['warn', 'error'],
   });
 
-// Worker processes recycle වීමේදී memory leaks වැළැක්වීම සඳහා අනිවාර්ය Singleton Cache කිරීම
+// Keep one Prisma client instance across module reloads and development restarts.
 globalForPrisma.prisma = prisma;
 
 let isConnected = false;
@@ -35,15 +42,36 @@ export function isDbConnected(): boolean {
   return isConnected;
 }
 
-// Server crash වීම වළක්වන Graceful DB Connection Handler
-export async function connectDB() {
+// Initialize the shared Prisma connection during server startup.
+export async function connectDB(): Promise<void> {
   try {
     await prisma.$connect();
     isConnected = true;
-    console.log(`✅ [${dbUrl.pathname.replace(/^\//, '')}] Prisma Native Engine connected successfully (Pool: 5, Timeout: 15s)`);
+
+    const databaseName = dbUrl.pathname.replace(/^\//, '');
+
+    // Standardized database engine logging without emojis or broken encodings
+    console.log('[db] Prisma Native Engine connected successfully (Pool limit: 5)');
+    
   } catch (error) {
     isConnected = false;
-    console.error('❌ Database connection queue timeout or failure:', error);
+    console.error('❌ Database connection failed:', error);
+    throw error;
+  }
+}
+
+// Gracefully close the shared Prisma connection during server shutdown.
+export async function disconnectDB(): Promise<void> {
+  if (!isConnected) {
+    return;
+  }
+
+  try {
+    await prisma.$disconnect();
+    isConnected = false;
+  } catch (error) {
+    console.error('❌ Database disconnect failed:', error);
+    throw error;
   }
 }
 

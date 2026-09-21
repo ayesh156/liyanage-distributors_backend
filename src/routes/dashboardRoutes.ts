@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import dashboardController from '../controllers/dashboardController.js';
+﻿import { Router } from 'express';
+import dashboardController from '../controllers/dashboardController.ts';
 
 const router = Router();
 
@@ -7,3 +7,4 @@ const router = Router();
 router.get('/analytics', dashboardController.analytics);
 
 export default router;
+

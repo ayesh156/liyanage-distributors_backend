@@ -1,5 +1,13 @@
-import prisma from '../config/prisma.js';
+﻿import prisma from '../lib/prisma.ts';
 import { PaymentMethod } from '@prisma/client';
+
+interface PaymentPayload {
+  paymentSelector?: unknown;
+  paymentMethod?: unknown;
+  paymentMode?: unknown;
+  docType?: unknown;
+  bankSlip?: unknown;
+}
 
 function normalizeText(value) {
   const text = String(value ?? '').trim();
@@ -32,13 +40,26 @@ function normalizeOptionalNumber(value) {
   return Number.isFinite(numeric) ? parseFloat(numeric.toFixed(2)) : 0;
 }
 
-function isChequeTransaction(payload = {}) {
+// Detects whether the invoice/payment payload represents a cheque or bank transaction.
+function isChequeTransaction(payload: PaymentPayload = {}) {
   const paymentMethod = resolvePaymentMethodValue(payload);
-  return paymentMethod === PaymentMethod.cheque || paymentMethod === PaymentMethod.bank_transfer || Boolean(payload.bankSlip);
+
+  return (
+    paymentMethod === PaymentMethod.cheque ||
+    paymentMethod === PaymentMethod.bank_transfer ||
+    Boolean(payload.bankSlip)
+  );
 }
 
-function resolvePaymentMethodValue(payload = {}) {
-  const selector = normalizeSelector(payload.paymentSelector || payload.paymentMethod || payload.paymentMode || payload.docType);
+// Resolves legacy payment selectors into the canonical Prisma payment method.
+function resolvePaymentMethodValue(payload: PaymentPayload = {}) {
+  const selector = normalizeSelector(
+    payload.paymentSelector ||
+    payload.paymentMethod ||
+    payload.paymentMode ||
+    payload.docType,
+  );
+
   if (Boolean(payload.bankSlip)) {
     return PaymentMethod.bank_transfer;
   }
@@ -49,11 +70,13 @@ function resolvePaymentMethodValue(payload = {}) {
     case 'BANK_SLIP_PAYMENT':
     case 'BANK_TRANSFER':
       return PaymentMethod.bank_transfer;
+
     case 'CHEQUE':
     case 'CHECK':
     case 'CHEQUE_PAYMENT':
     case 'CHECK_PAYMENT':
       return PaymentMethod.cheque;
+
     case 'CASH':
     case 'CASH_PAYMENT':
     default:
@@ -205,7 +228,7 @@ const invoiceController = {
       } = req.query;
       const skip = (parseInt(page) - 1) * parseInt(limit);
 
-      const where = {};
+      const where: any = {};
       if (search) {
         where.OR = [
           { documentNo: { contains: search } },
@@ -267,9 +290,9 @@ const invoiceController = {
 
   /**
    * GET /api/invoices/outstanding
-   * ═══════════════════════════════════════════════════════════════
+   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    * FULL OUTSTANDING REPORT ENDPOINT
-   * ═══════════════════════════════════════════════════════════════
+   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    *
    * Returns all invoice rows with balance calculations, ordered by date ASC.
    * The frontend groups them by store and computes running balances
@@ -293,7 +316,7 @@ const invoiceController = {
         limit = 5000,
       } = req.query;
 
-      const where = {};
+      const where: any = {};
       if (storeId) where.storeId = storeId;
 
       const yearNum = Number(year);
@@ -395,7 +418,7 @@ const invoiceController = {
     try {
       const { startDate, endDate } = req.query;
 
-      const where = {};
+      const where: any = {};
       if (startDate || endDate) {
         where.date = {};
         if (startDate) where.date.gte = new Date(startDate);
@@ -421,7 +444,7 @@ const invoiceController = {
         }),
       ]);
 
-      const metrics = {
+      const metrics: any = {
         totalBilled: toMoneyNumber(aggregate?._sum?.amount),
         totalReceived: toMoneyNumber(aggregate?._sum?.received),
         totalOutstanding: toMoneyNumber(aggregate?._sum?.balanceDue),
@@ -652,7 +675,7 @@ const invoiceController = {
         return res.status(404).json({ success: false, error: 'Invoice not found' });
       }
 
-      // ── INVOICE EDIT OVERPAYMENT GUARD: Prevent received > amount ──────────
+      // â”€â”€ INVOICE EDIT OVERPAYMENT GUARD: Prevent received > amount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (received !== undefined && amount !== undefined && Number(received) > Number(amount)) {
         return res.status(400).json({
           success: false,
@@ -666,12 +689,12 @@ const invoiceController = {
         });
       }
 
-      const updateData = {};
+      const updateData: any = {};
       if (description !== undefined) updateData.description = stripTrailingNoToken(description);
       if (status !== undefined) updateData.status = status;
       if (docType !== undefined) updateData.docType = docType;
 
-      // ── Document Number Handling ──────────────────────────────────
+      // â”€â”€ Document Number Handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Safe-guard: if documentNo is provided, only update if it differs
       // from the existing value AND no other invoice already uses it.
       const resolvedDocNo =
@@ -683,7 +706,7 @@ const invoiceController = {
         const incomingDocNo = normalizeOptionalText(resolvedDocNo);
 
         if (incomingDocNo !== existingDocNo) {
-          // documentNo is being changed — check for duplicate
+          // documentNo is being changed â€” check for duplicate
           const duplicate = await prisma.invoice.findUnique({
             where: { documentNo: incomingDocNo },
             select: { id: true },
@@ -701,7 +724,7 @@ const invoiceController = {
         // If incomingDocNo === existingDocNo, simply omit documentNo
         // from the update payload to avoid triggering the unique constraint.
       }
-      // ── End Document Number Handling ──────────────────────────────
+      // â”€â”€ End Document Number Handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (date !== undefined) updateData.date = new Date(date);
 
       const existingReceived = toMoneyNumber(existing.received);

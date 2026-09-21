@@ -1,12 +1,12 @@
-import prisma from '../lib/prisma.js';
-import { AppError } from '../utils/appError.js';
+﻿import prisma from '../lib/prisma.ts';
+import { AppError } from '../utils/appError.ts';
 import {
-  StoreDTO,
-  CreateStoreInput,
-  UpdateStoreInput,
-  StoreQueryParams,
-  PaginatedResult,
-} from '../types/index.js';
+  type StoreDTO,
+  type CreateStoreInput,
+  type UpdateStoreInput,
+  type StoreQueryParams,
+  type PaginatedResult,
+} from '../types/index.ts';
 
 function toDTO(record: any): StoreDTO {
   return {
@@ -18,10 +18,10 @@ function toDTO(record: any): StoreDTO {
     salesPersonId: record.salesPersonId ?? undefined,
     salesPerson: record.salesPerson
       ? {
-          id: record.salesPerson.id,
-          name: record.salesPerson.name,
-          phone: record.salesPerson.phone ?? undefined,
-        }
+        id: record.salesPerson.id,
+        name: record.salesPerson.name,
+        phone: record.salesPerson.phone ?? undefined,
+      }
       : undefined,
     invoiceCount: record._count?.invoices ?? 0,
     createdAt: record.createdAt?.toISOString(),
@@ -78,7 +78,7 @@ export class StoreService {
    * List all unique delivery routes from the Route model.
    */
   static async listRoutes(): Promise<string[]> {
-    // 🌟 Prisma Route model එකෙන් සෘජුවම unique route නම් ලබා ගැනීම
+    // ðŸŒŸ Prisma Route model à¶‘à¶šà·™à¶±à·Š à·ƒà·˜à¶¢à·”à·€à¶¸ unique route à¶±à¶¸à·Š à¶½à¶¶à· à¶œà·à¶±à·“à¶¸
     const routes = await (prisma as any).route.findMany({
       select: { name: true },
       orderBy: { name: 'asc' },
@@ -138,7 +138,7 @@ export class StoreService {
       data: {
         name: input.name.trim(),
         address: input.address ?? null,
-        // 🌟 Route relation handling: Route name එකක් තිබේ නම් connect කිරීම
+        // ðŸŒŸ Route relation handling: Route name à¶‘à¶šà¶šà·Š à¶­à·’à¶¶à·š à¶±à¶¸à·Š connect à¶šà·’à¶»à·“à¶¸
         ...(input.route
           ? { route: { connect: { name: input.route } } }
           : {}),

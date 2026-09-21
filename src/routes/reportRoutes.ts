@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import invoiceController from '../controllers/invoiceController.js';
+﻿import { Router } from 'express';
+import invoiceController from '../controllers/invoiceController.ts';
 
 const router = Router();
 
@@ -7,3 +7,4 @@ const router = Router();
 router.get('/outstanding', invoiceController.outstanding);
 
 export default router;
+

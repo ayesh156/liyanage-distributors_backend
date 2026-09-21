@@ -1,6 +1,6 @@
-import { Request, Response } from 'express';
-import { SalesPersonService } from '../services/salesPerson.service.js';
-import { catchAsync } from '../utils/catchAsync.js';
+import type { Request, Response } from 'express';
+import { SalesPersonService } from '../services/salesPerson.service.ts';
+import { catchAsync } from '../utils/catchAsync.ts';
 
 export const SalesPersonController = {
   /**

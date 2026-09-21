@@ -1,4 +1,4 @@
-import prisma from '../config/prisma.js';
+﻿import prisma from '../lib/prisma.ts';
 
 function normalizeText(value) {
   const text = String(value || '').trim();
@@ -21,7 +21,7 @@ const routeController = {
       const { search, page = 1, limit = 100 } = req.query;
       const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-      const where = {};
+      const where: any = {};
       if (search) {
         where.OR = [
           { name: { contains: String(search).trim() } },
@@ -252,3 +252,4 @@ const routeController = {
 };
 
 export default routeController;
+

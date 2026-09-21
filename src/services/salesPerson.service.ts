@@ -1,12 +1,12 @@
-import prisma from '../lib/prisma.js';
-import { AppError } from '../utils/appError.js';
+﻿import prisma from '../lib/prisma.ts';
+import { AppError } from '../utils/appError.ts';
 import {
-  SalesPersonDTO,
-  CreateSalesPersonInput,
-  UpdateSalesPersonInput,
-  SalesPersonQueryParams,
-  PaginatedResult,
-} from '../types/index.js';
+  type SalesPersonDTO,
+  type CreateSalesPersonInput,
+  type UpdateSalesPersonInput,
+  type SalesPersonQueryParams,
+  type PaginatedResult,
+} from '../types/index.ts';
 
 function toDTO(record: any): SalesPersonDTO {
   return {

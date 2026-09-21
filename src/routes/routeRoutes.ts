@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import routeController from '../controllers/routeController.js';
+﻿import { Router } from 'express';
+import routeController from '../controllers/routeController.ts';
 
 const router = Router();
 
@@ -19,3 +19,4 @@ router.put('/:id', routeController.update);
 router.delete('/:id', routeController.delete);
 
 export default router;
+

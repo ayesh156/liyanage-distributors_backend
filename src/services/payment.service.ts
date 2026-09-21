@@ -1,12 +1,12 @@
-import prisma from '../lib/prisma.js';
-import { AppError } from '../utils/appError.js';
+﻿import prisma from '../lib/prisma.ts';
+import { AppError } from '../utils/appError.ts';
 import {
   PaymentDTO,
   CreatePaymentInput,
   BulkPaymentInput,
   PaymentQueryParams,
   PaginatedResult,
-} from '../types/index.js';
+} from '../types/index.ts';
 
 function toDTO(record: any): PaymentDTO {
   return {

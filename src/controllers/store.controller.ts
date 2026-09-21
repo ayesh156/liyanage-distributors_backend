@@ -1,6 +1,6 @@
-import { Request, Response } from 'express';
-import { StoreService } from '../services/store.service.js';
-import { catchAsync } from '../utils/catchAsync.js';
+import type { Request, Response } from 'express';
+import { StoreService } from '../services/store.service.ts';
+import { catchAsync } from '../utils/catchAsync.ts';
 
 export const StoreController = {
   /**

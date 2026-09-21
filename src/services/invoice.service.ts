@@ -1,5 +1,5 @@
-import prisma from '../lib/prisma.js';
-import { AppError } from '../utils/appError.js';
+﻿import prisma from '../lib/prisma.ts';
+import { AppError } from '../utils/appError.ts';
 import {
   InvoiceDTO,
   CreateInvoiceInput,
@@ -7,7 +7,7 @@ import {
   InvoiceQueryParams,
   InvoiceSummary,
   PaginatedResult,
-} from '../types/index.js';
+} from '../types/index.ts';
 
 function normalizeOptionalText(value: unknown, fallback: string | null = null): string | null {
   if (value === null || value === undefined) return fallback;
@@ -549,8 +549,8 @@ export class InvoiceService {
   /**
    * DELETE /api/invoices/:id
    * CONSTRAINT-AWARE SOFT/HARD DELETE:
-   * - If payments exist → soft-delete by cancelling (balanceDue = 0, status = cancelled)
-   * - If no payments → hard-delete permanently
+   * - If payments exist â†’ soft-delete by cancelling (balanceDue = 0, status = cancelled)
+   * - If no payments â†’ hard-delete permanently
    */
   static async delete(id: string): Promise<{ softDeleted: boolean }> {
     const existing = await prisma.invoice.findUnique({
@@ -563,7 +563,7 @@ export class InvoiceService {
     }
 
     if (existing._count.payments > 0) {
-      // Soft delete — cancel the invoice
+      // Soft delete â€” cancel the invoice
       await prisma.$transaction(async (tx) => {
         await tx.invoice.update({
           where: { id },
@@ -575,7 +575,7 @@ export class InvoiceService {
       return { softDeleted: true };
     }
 
-    // No payments — hard delete
+    // No payments â€” hard delete
     await prisma.$transaction(async (tx) => {
       await tx.invoice.delete({ where: { id } });
       await recomputeStoreOutstandingBalance(tx, existing.storeId);

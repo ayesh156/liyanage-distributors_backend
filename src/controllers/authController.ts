@@ -1,10 +1,16 @@
-import prisma from '../config/prisma.js';
-import authService from '../services/authService.js';
+﻿import type { Request, Response } from 'express';
+import prisma from '../lib/prisma.ts';
+import authService from '../services/authService.ts';
+
+interface ControllerError extends Error {
+  status?: number;
+}
 
 const cookieSecure = process.env.NODE_ENV === 'production';
 
+// Handles authentication login and current-user endpoints.
 const authController = {
-  async login(req, res) {
+  async login(req: Request, res: Response): Promise<void> {
     try {
       const result = await authService.login(req.body || {});
 
@@ -20,41 +26,47 @@ const authController = {
         data: result,
       });
     } catch (error) {
-      res.status(error.status || 500).json({
+      const controllerError = error as ControllerError;
+
+      res.status(controllerError.status || 500).json({
         success: false,
-        error: error.message || 'Login failed',
+        error: controllerError.message || 'Login failed',
       });
     }
   },
 
-  async me(req, res) {
+  async me(req: Request, res: Response): Promise<void> {
     try {
       const token = authService.extractToken(req);
+
       if (!token) {
-        return res.status(401).json({
+        res.status(401).json({
           success: false,
           error: 'Not authenticated',
         });
+        return;
       }
 
       const decoded = authService.verifyToken(token);
+
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
       });
 
       if (!user) {
-        return res.status(401).json({
+        res.status(401).json({
           success: false,
           error: 'User not found',
         });
+        return;
       }
 
-      return res.json({
+      res.json({
         success: true,
         data: authService.toSafeUser(user),
       });
-    } catch (error) {
-      return res.status(401).json({
+    } catch (_error) {
+      res.status(401).json({
         success: false,
         error: 'Invalid or expired token',
       });

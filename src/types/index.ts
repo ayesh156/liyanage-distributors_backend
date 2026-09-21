@@ -214,3 +214,9 @@ export interface PaymentQueryParams {
   page?: number;
   limit?: number;
 }
+
+export interface AuthenticatedUser {
+  userId: string;
+  username: string;
+  role: string;
+}

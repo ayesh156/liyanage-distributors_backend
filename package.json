@@ -3,23 +3,23 @@
   "version": "1.0.0",
   "description": "Production-grade REST API for Liyanage Hardware Distributors - Ledger Management System",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "src/index.ts",
   "scripts": {
-    "dev": "tsx watch src/index.js",
+    "dev": "node src/index.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit && tsup src/index.js --outDir dist --format cjs --clean --sourcemap && cp dist/index.cjs dist/index.js",
-    "start": "node dist/index.js",
+    "build": "tsc --noEmit",
+    "start": "node src/index.ts",
     "postinstall": "npx prisma generate",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push",
     "db:migrate": "npx prisma migrate dev",
-    "db:seed": "node prisma/seed.js",
+    "db:seed": "node prisma/seed.ts",
     "db:studio": "npx prisma studio",
     "db:reset": "npx prisma migrate reset --force",
-    "setup": "npm install && npx prisma generate && npx prisma db push && node prisma/seed.js"
+    "setup": "npm install && npx prisma generate && npx prisma db push && node prisma/seed.ts"
   },
   "prisma": {
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.ts"
   },
   "keywords": [
     "hardware",
@@ -45,8 +45,6 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
     "prisma": "^5.22.0",
-    "tsup": "^8.5.1",
-    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   }
 }
