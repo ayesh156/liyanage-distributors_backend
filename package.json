@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node src/index.ts",
     "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit",
+    "build": "tsup src/index.ts --format esm --platform node --target node24 --out-dir dist --sourcemap",
     "start": "node src/index.ts",
     "postinstall": "npx prisma generate",
     "db:generate": "npx prisma generate",
@@ -39,7 +39,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "tsup": "^8.5.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
