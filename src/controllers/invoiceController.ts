@@ -392,7 +392,28 @@ const invoiceController = {
 
       const total = filteredInvoices.length;
       const skip = (parseInt(page) - 1) * parseInt(limit);
-      const pagedInvoices = filteredInvoices.slice(skip, skip + parseInt(limit));
+      
+      const pagedInvoices = filteredInvoices.slice(skip, skip + parseInt(limit)).map((invoice: any) => {
+        // Safe route extraction: supports Relation Object, String, or routeName
+        const rawRoute = invoice.store?.route;
+        const resolvedRouteName = 
+          (typeof rawRoute === 'object' && rawRoute !== null ? rawRoute.name : null) ||
+          (typeof rawRoute === 'string' && rawRoute.trim() !== '' ? rawRoute.trim() : null) ||
+          invoice.store?.routeName ||
+          invoice.route ||
+          'Unassigned Route';
+
+        return {
+          ...invoice,
+          route: resolvedRouteName,
+          routeName: resolvedRouteName,
+          store: {
+            ...invoice.store,
+            route: resolvedRouteName,
+            routeName: resolvedRouteName,
+          },
+        };
+      });
 
       res.json({
         success: true,

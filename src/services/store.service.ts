@@ -9,11 +9,18 @@ import {
 } from '../types/index.ts';
 
 function toDTO(record: any): StoreDTO {
+  // Extract route name safely from relation object or string value
+  const resolvedRoute =
+    (typeof record.route === 'object' && record.route !== null ? record.route.name : null) ||
+    (typeof record.route === 'string' && record.route.trim() !== '' ? record.route.trim() : null) ||
+    record.routeName ||
+    'Unassigned Route';
+
   return {
     id: record.id,
     name: record.name,
     address: record.address ?? undefined,
-    route: record.route ?? undefined,
+    route: resolvedRoute as any,
     phone: record.phone ?? undefined,
     salesPersonId: record.salesPersonId ?? undefined,
     salesPerson: record.salesPerson
@@ -59,6 +66,7 @@ export class StoreService {
         take: limit,
         orderBy: { name: 'asc' },
         include: {
+          route: { select: { id: true, name: true, routeCode: true } },
           _count: { select: { invoices: true } },
           salesPerson: { select: { id: true, name: true, phone: true } },
         },
@@ -93,6 +101,7 @@ export class StoreService {
     const item = await prisma.store.findUnique({
       where: { id },
       include: {
+        route: { select: { id: true, name: true, routeCode: true } },
         _count: { select: { invoices: true } },
         salesPerson: { select: { id: true, name: true, phone: true } },
         invoices: {
@@ -168,7 +177,12 @@ export class StoreService {
     const updateData: any = {};
     if (input.name !== undefined) updateData.name = input.name.trim();
     if (input.address !== undefined) updateData.address = input.address;
-    if (input.route !== undefined) updateData.route = input.route;
+    if (input.route !== undefined) {
+      const routeValue = String(input.route || '').trim();
+      updateData.route = routeValue
+        ? { connect: { name: routeValue } }
+        : { disconnect: true };
+    }
     if (input.phone !== undefined) updateData.phone = input.phone;
     if (Object.prototype.hasOwnProperty.call(input, 'salesPersonId')) {
       const normalizedSalesPersonId = String(input.salesPersonId || '').trim() || null;

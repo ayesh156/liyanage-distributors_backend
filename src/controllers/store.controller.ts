@@ -17,9 +17,24 @@ export const StoreController = {
 
     const result = await StoreService.getAll(query);
 
+    // Map store records with fallback route name to prevent "Unassigned Route" in UI
+    const mappedStores = (result.data || []).map((store: any) => {
+      const resolvedRoute =
+        (typeof store.route === 'object' && store.route !== null ? store.route.name : null) ||
+        (typeof store.route === 'string' && store.route.trim() !== '' ? store.route.trim() : null) ||
+        store.routeName ||
+        'Unassigned Route';
+
+      return {
+        ...store,
+        route: resolvedRoute,
+        routeName: resolvedRoute,
+      };
+    });
+
     res.status(200).json({
       success: true,
-      data: result.data,
+      data: mappedStores,
       pagination: result.pagination,
     });
   }),
@@ -38,8 +53,24 @@ export const StoreController = {
    */
   getById: catchAsync(async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const store = await StoreService.getById(id);
-    res.status(200).json({ success: true, data: store });
+    const store: any = await StoreService.getById(id);
+
+    // Normalize route field to plain string name for UI headers
+    const resolvedRoute =
+      (typeof store?.route === 'object' && store?.route !== null ? store?.route?.name : null) ||
+      (typeof store?.route === 'string' && store?.route.trim() !== '' ? store?.route.trim() : null) ||
+      store?.routeName ||
+      'Unassigned Route';
+
+    const normalizedStore = store
+      ? {
+          ...store,
+          route: resolvedRoute,
+          routeName: resolvedRoute,
+        }
+      : store;
+
+    res.status(200).json({ success: true, data: normalizedStore });
   }),
 
   /**
