@@ -110,8 +110,8 @@ const userController = {
           return;
         }
 
-        if (String(newPassword).length < 6) {
-          res.status(400).json({ success: false, error: 'New password must be at least 6 characters long' });
+        if (String(newPassword).length < 5) {
+          res.status(400).json({ success: false, error: 'New password must be at least 5 characters long' });
           return;
         }
 
@@ -173,8 +173,8 @@ const userController = {
         return;
       }
 
-      if (String(password).length < 6) {
-        res.status(400).json({ success: false, error: 'Password must be at least 6 characters long' });
+      if (String(password).length < 5) {
+        res.status(400).json({ success: false, error: 'Password must be at least 5 characters long' });
         return;
       }
 
@@ -234,7 +234,11 @@ const userController = {
       if (email !== undefined) updateData.email = email ? String(email).trim() : null;
       if (role !== undefined) updateData.role = String(role).toUpperCase();
       if (status !== undefined) updateData.status = String(status).toUpperCase();
-      if (password && String(password).trim().length >= 6) {
+      if (password) {
+        if (String(password).trim().length < 5) {
+          res.status(400).json({ success: false, error: 'Password must be at least 5 characters long' });
+          return;
+        }
         updateData.password = await bcrypt.hash(String(password).trim(), 12);
       }
 
@@ -263,8 +267,8 @@ const userController = {
       const id = String(req.params.id);
       const { newPassword } = req.body || {};
 
-      if (!newPassword || String(newPassword).length < 6) {
-        res.status(400).json({ success: false, error: 'New password must be at least 6 characters long' });
+      if (!newPassword || String(newPassword).length < 5) {
+        res.status(400).json({ success: false, error: 'New password must be at least 5 characters long' });
         return;
       }
 
