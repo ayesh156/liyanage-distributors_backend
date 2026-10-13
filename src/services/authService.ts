@@ -1,4 +1,4 @@
-﻿import bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import jwt, { type JwtPayload, type SignOptions } from 'jsonwebtoken';
 import type { Request } from 'express';
 import prisma from '../lib/prisma.ts';
@@ -33,12 +33,20 @@ const toSafeUser = (user: {
   id: string;
   username: string;
   role: string;
+  name?: string | null;
+  email?: string | null;
+  status?: string | null;
   createdAt: Date;
+  updatedAt?: Date;
 }) => ({
   id: user.id,
   username: user.username,
   role: user.role,
+  name: user.name || (user.username === 'admin' ? 'Ayesh Chathuranga' : user.username),
+  email: user.email || (user.username === 'admin' ? 'ayesh@gmail.com' : `${user.username}@liyanagedistributors.com`),
+  status: user.status || 'ACTIVE',
   createdAt: user.createdAt,
+  updatedAt: user.updatedAt || user.createdAt,
 });
 
 const extractBearerToken = (authHeader = ''): string | null => {

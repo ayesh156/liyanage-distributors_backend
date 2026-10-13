@@ -220,3 +220,41 @@ export interface AuthenticatedUser {
   username: string;
   role: string;
 }
+
+// ── User Management & Staff DTOs ──
+
+export interface UserDTO {
+  id: string;
+  username: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface UpdateProfileInput {
+  username?: string;
+  name?: string;
+  email?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
+export interface CreateUserInput {
+  username: string;
+  password: string;
+  name?: string;
+  email?: string;
+  role?: string;
+  status?: string;
+}
+
+export interface UpdateUserInput {
+  name?: string;
+  email?: string;
+  role?: string;
+  status?: string;
+  password?: string;
+}

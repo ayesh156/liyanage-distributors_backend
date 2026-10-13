@@ -1,4 +1,4 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import storeRoutes from './storeRoutes.ts';
 import salesPersonRoutes from './salesPersonRoutes.ts';
 import invoiceRoutes from './invoiceRoutes.ts';
@@ -10,24 +10,18 @@ import authRoutes from './authRoutes.ts';
 import { authMiddleware } from '../middlewares/authMiddleware.ts';
 import { getDatabaseHealth } from '../config/database.ts';
 
+import healthRoutes from './health.routes.ts';
+import userRoutes from './userRoutes.ts';
+
 const router = Router();
 
-// Health Check
-router.get('/health', async (req, res) => {
-  const health = await getDatabaseHealth();
-
-  res.json({
-    success: true,
-    timestamp: new Date().toISOString(),
-    service: 'liyanage-distributors-api',
-    version: '1.0.0',
-    ...health,
-  });
-});
+// Health Check (Lightweight ping endpoint with { status: "ok" })
+router.use('/health', healthRoutes);
 
 // Mount Resource Routes
 router.use('/auth', authRoutes);
 router.use(authMiddleware);
+router.use('/users', userRoutes);
 router.use('/stores', storeRoutes);
 router.use('/sales-persons', salesPersonRoutes);
 router.use('/invoices', invoiceRoutes);
