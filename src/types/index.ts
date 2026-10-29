@@ -6,11 +6,20 @@
 
 // ── Store ──
 
+export interface StoreRouteRelationDTO {
+  id: number;
+  name: string;
+  routeCode?: string;
+}
+
 export interface StoreDTO {
   id: string;
+  storeCode?: string;
   name: string;
   address?: string;
-  route?: string;
+  routeId?: number | null;
+  route?: StoreRouteRelationDTO | string;
+  routeName?: string;
   phone?: string;
   salesPersonId?: string;
   salesPerson?: {
@@ -25,7 +34,9 @@ export interface StoreDTO {
 
 export interface CreateStoreInput {
   name: string;
+  storeCode?: string;
   address?: string;
+  routeId?: number | string | null;
   route?: string;
   phone?: string;
   salesPersonId?: string;
@@ -33,7 +44,9 @@ export interface CreateStoreInput {
 
 export interface UpdateStoreInput {
   name?: string;
+  storeCode?: string;
   address?: string;
+  routeId?: number | string | null;
   route?: string;
   phone?: string;
   salesPersonId?: string | null;
@@ -257,4 +270,4 @@ export interface UpdateUserInput {
   role?: string;
   status?: string;
   password?: string;
-}
+}

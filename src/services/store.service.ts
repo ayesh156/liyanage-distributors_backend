@@ -1,4 +1,4 @@
-﻿import prisma from '../lib/prisma.ts';
+import prisma from '../lib/prisma.ts';
 import { AppError } from '../utils/appError.ts';
 import {
   type StoreDTO,
@@ -8,27 +8,51 @@ import {
   type PaginatedResult,
 } from '../types/index.ts';
 
+/**
+ * Normalizes a raw Store Prisma database record into a strongly-typed StoreDTO.
+ * Preserves the relational route object, extracts routeId, and provides a safe
+ * fallback routeName to ensure UI components never fall back to "Unassigned Route".
+ *
+ * @param record - Raw Store record with relations from Prisma
+ * @returns Standardized StoreDTO
+ */
 function toDTO(record: any): StoreDTO {
-  // Extract route name safely from relation object or string value
-  const resolvedRoute =
-    (typeof record.route === 'object' && record.route !== null ? record.route.name : null) ||
+  const routeObj =
+    record.route && typeof record.route === 'object'
+      ? {
+          id: record.route.id,
+          name: record.route.name,
+          routeCode: record.route.routeCode,
+        }
+      : null;
+
+  const resolvedRouteName =
+    routeObj?.name ||
     (typeof record.route === 'string' && record.route.trim() !== '' ? record.route.trim() : null) ||
     record.routeName ||
     'Unassigned Route';
 
+  const resolvedRouteId =
+    record.routeId != null
+      ? Number(record.routeId)
+      : (routeObj?.id != null ? Number(routeObj.id) : null);
+
   return {
     id: record.id,
+    storeCode: record.storeCode ?? undefined,
     name: record.name,
     address: record.address ?? undefined,
-    route: resolvedRoute as any,
+    routeId: resolvedRouteId,
+    route: routeObj || resolvedRouteName,
+    routeName: resolvedRouteName,
     phone: record.phone ?? undefined,
     salesPersonId: record.salesPersonId ?? undefined,
     salesPerson: record.salesPerson
       ? {
-        id: record.salesPerson.id,
-        name: record.salesPerson.name,
-        phone: record.salesPerson.phone ?? undefined,
-      }
+          id: record.salesPerson.id,
+          name: record.salesPerson.name,
+          phone: record.salesPerson.phone ?? undefined,
+        }
       : undefined,
     invoiceCount: record._count?.invoices ?? 0,
     createdAt: record.createdAt?.toISOString(),
@@ -39,7 +63,7 @@ function toDTO(record: any): StoreDTO {
 export class StoreService {
   /**
    * GET /api/stores
-   * Paginated, searchable list of stores.
+   * Paginated, searchable list of customer stores including related Route and SalesPerson.
    */
   static async getAll(params: StoreQueryParams): Promise<PaginatedResult<StoreDTO>> {
     const { search, route: routeFilter, page = 1, limit = 50 } = params;
@@ -49,13 +73,20 @@ export class StoreService {
     if (search) {
       const q = search.trim();
       where.OR = [
-        { name: { contains: q, mode: 'insensitive' } },
-        { phone: { contains: q, mode: 'insensitive' } },
-        { address: { contains: q, mode: 'insensitive' } },
+        { name: { contains: q } },
+        { phone: { contains: q } },
+        { address: { contains: q } },
       ];
     }
-    if (routeFilter) {
-      where.route = routeFilter;
+
+    if (routeFilter && routeFilter.trim()) {
+      const q = routeFilter.trim();
+      const parsedId = Number(q);
+      if (!Number.isNaN(parsedId) && parsedId > 0) {
+        where.routeId = parsedId;
+      } else {
+        where.route = { name: q };
+      }
     }
 
     const [total, items] = await Promise.all([
@@ -83,11 +114,10 @@ export class StoreService {
 
   /**
    * GET /api/stores/routes
-   * List all unique delivery routes from the Route model.
+   * List all unique delivery route names directly from the Route model.
    */
   static async listRoutes(): Promise<string[]> {
-    // ðŸŒŸ Prisma Route model à¶‘à¶šà·™à¶±à·Š à·ƒà·˜à¶¢à·”à·€à¶¸ unique route à¶±à¶¸à·Š à¶½à¶¶à· à¶œà·à¶±à·“à¶¸
-    const routes = await (prisma as any).route.findMany({
+    const routes = await prisma.route.findMany({
       select: { name: true },
       orderBy: { name: 'asc' },
     });
@@ -96,6 +126,7 @@ export class StoreService {
 
   /**
    * GET /api/stores/:id
+   * Retrieves full store details, active relational route, assigned sales rep, and invoices.
    */
   static async getById(id: string): Promise<StoreDTO> {
     const item = await prisma.store.findUnique({
@@ -126,6 +157,7 @@ export class StoreService {
 
   /**
    * POST /api/stores
+   * Creates a new Store with optional routeId relational assignment and assigned sales person.
    */
   static async create(input: CreateStoreInput): Promise<StoreDTO> {
     if (!input.name || input.name.trim().length === 0) {
@@ -143,20 +175,41 @@ export class StoreService {
       }
     }
 
+    // Resolve assigned route ID: prefer explicit routeId, fallback to route name lookup
+    let assignedRouteId: number | null = null;
+    if (input.routeId !== undefined && input.routeId !== null && String(input.routeId).trim() !== '') {
+      const parsedRouteId = Number(input.routeId);
+      if (!Number.isNaN(parsedRouteId)) {
+        const routeExists = await prisma.route.findUnique({
+          where: { id: parsedRouteId },
+          select: { id: true },
+        });
+        if (!routeExists) {
+          throw new AppError(`Delivery route with ID ${parsedRouteId} does not exist`, 400);
+        }
+        assignedRouteId = parsedRouteId;
+      }
+    } else if (input.route && typeof input.route === 'string' && input.route.trim() !== '') {
+      const matchedRoute = await prisma.route.findUnique({
+        where: { name: input.route.trim() },
+        select: { id: true },
+      });
+      if (matchedRoute) {
+        assignedRouteId = matchedRoute.id;
+      }
+    }
+
     const item = await prisma.store.create({
       data: {
         name: input.name.trim(),
+        storeCode: input.storeCode ?? null,
         address: input.address ?? null,
-        // ðŸŒŸ Route relation handling: Route name à¶‘à¶šà¶šà·Š à¶­à·’à¶¶à·š à¶±à¶¸à·Š connect à¶šà·’à¶»à·“à¶¸
-        ...(input.route
-          ? { route: { connect: { name: input.route } } }
-          : {}),
+        routeId: assignedRouteId,
         phone: input.phone ?? null,
-        salesPerson: normalizedSalesPersonId
-          ? { connect: { id: normalizedSalesPersonId } }
-          : undefined,
-      } as any,
+        salesPersonId: normalizedSalesPersonId,
+      },
       include: {
+        route: { select: { id: true, name: true, routeCode: true } },
         _count: { select: { invoices: true } },
         salesPerson: { select: { id: true, name: true, phone: true } },
       },
@@ -167,6 +220,7 @@ export class StoreService {
 
   /**
    * PUT /api/stores/:id
+   * Updates store details, adjusting relational routeId and salesPersonId connections safely.
    */
   static async update(id: string, input: UpdateStoreInput): Promise<StoreDTO> {
     const existing = await prisma.store.findUnique({ where: { id } });
@@ -176,14 +230,40 @@ export class StoreService {
 
     const updateData: any = {};
     if (input.name !== undefined) updateData.name = input.name.trim();
+    if (input.storeCode !== undefined) updateData.storeCode = input.storeCode;
     if (input.address !== undefined) updateData.address = input.address;
-    if (input.route !== undefined) {
-      const routeValue = String(input.route || '').trim();
-      updateData.route = routeValue
-        ? { connect: { name: routeValue } }
-        : { disconnect: true };
-    }
     if (input.phone !== undefined) updateData.phone = input.phone;
+
+    // Relational route update: support routeId (preferred) or route name fallback
+    if (input.routeId !== undefined) {
+      if (input.routeId === null || String(input.routeId).trim() === '') {
+        updateData.routeId = null;
+      } else {
+        const parsedRouteId = Number(input.routeId);
+        if (!Number.isNaN(parsedRouteId)) {
+          const routeExists = await prisma.route.findUnique({
+            where: { id: parsedRouteId },
+            select: { id: true },
+          });
+          if (!routeExists) {
+            throw new AppError(`Delivery route with ID ${parsedRouteId} does not exist`, 400);
+          }
+          updateData.routeId = parsedRouteId;
+        }
+      }
+    } else if (input.route !== undefined) {
+      const routeValue = String(input.route || '').trim();
+      if (!routeValue) {
+        updateData.routeId = null;
+      } else {
+        const matchedRoute = await prisma.route.findUnique({
+          where: { name: routeValue },
+          select: { id: true },
+        });
+        updateData.routeId = matchedRoute ? matchedRoute.id : null;
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(input, 'salesPersonId')) {
       const normalizedSalesPersonId = String(input.salesPersonId || '').trim() || null;
       if (normalizedSalesPersonId) {
@@ -195,15 +275,14 @@ export class StoreService {
           throw new AppError('Sales person not found', 400);
         }
       }
-      updateData.salesPerson = normalizedSalesPersonId
-        ? { connect: { id: normalizedSalesPersonId } }
-        : { disconnect: true };
+      updateData.salesPersonId = normalizedSalesPersonId;
     }
 
     const updated = await prisma.store.update({
       where: { id },
       data: updateData,
       include: {
+        route: { select: { id: true, name: true, routeCode: true } },
         _count: { select: { invoices: true } },
         salesPerson: { select: { id: true, name: true, phone: true } },
       },
@@ -214,7 +293,7 @@ export class StoreService {
 
   /**
    * DELETE /api/stores/:id
-   * Prevents deletion if store has invoices.
+   * Prevents deletion if store has existing ledger invoices.
    */
   static async delete(id: string): Promise<void> {
     const existing = await prisma.store.findUnique({

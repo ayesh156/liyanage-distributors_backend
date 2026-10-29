@@ -6,6 +6,7 @@ export const StoreController = {
   /**
    * GET /api/stores
    * Query params: search, route, page, limit
+   * Returns list of stores including related route details and routeId.
    */
   list: catchAsync(async (req: Request, res: Response) => {
     const query = {
@@ -17,9 +18,9 @@ export const StoreController = {
 
     const result = await StoreService.getAll(query);
 
-    // Map store records with fallback route name to prevent "Unassigned Route" in UI
+    // Ensure store records expose routeId and complete route relation object
     const mappedStores = (result.data || []).map((store: any) => {
-      const resolvedRoute =
+      const routeName =
         (typeof store.route === 'object' && store.route !== null ? store.route.name : null) ||
         (typeof store.route === 'string' && store.route.trim() !== '' ? store.route.trim() : null) ||
         store.routeName ||
@@ -27,8 +28,9 @@ export const StoreController = {
 
       return {
         ...store,
-        route: resolvedRoute,
-        routeName: resolvedRoute,
+        routeId: store.routeId ?? (typeof store.route === 'object' && store.route !== null ? store.route.id : null),
+        route: store.route ?? routeName,
+        routeName,
       };
     });
 
@@ -50,13 +52,13 @@ export const StoreController = {
 
   /**
    * GET /api/stores/:id
+   * Retrieves full store details, active relational route, assigned sales rep, and invoices.
    */
   getById: catchAsync(async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const store: any = await StoreService.getById(id);
 
-    // Normalize route field to plain string name for UI headers
-    const resolvedRoute =
+    const routeName =
       (typeof store?.route === 'object' && store?.route !== null ? store?.route?.name : null) ||
       (typeof store?.route === 'string' && store?.route.trim() !== '' ? store?.route.trim() : null) ||
       store?.routeName ||
@@ -65,8 +67,9 @@ export const StoreController = {
     const normalizedStore = store
       ? {
           ...store,
-          route: resolvedRoute,
-          routeName: resolvedRoute,
+          routeId: store.routeId ?? (typeof store.route === 'object' && store.route !== null ? store.route.id : null),
+          route: store.route ?? routeName,
+          routeName,
         }
       : store;
 
@@ -75,20 +78,32 @@ export const StoreController = {
 
   /**
    * POST /api/stores
+   * Creates a store and associates it with the provided routeId.
    */
   create: catchAsync(async (req: Request, res: Response) => {
-    const { salesPersonId, ...rest } = req.body as any;
-    const store = await StoreService.create({ ...rest, salesPersonId });
+    const { routeId, salesPersonId, ...rest } = req.body as any;
+    const store = await StoreService.create({
+      ...rest,
+      routeId: routeId !== undefined ? (routeId === '' || routeId === null ? null : Number(routeId)) : undefined,
+      salesPersonId,
+    });
     res.status(201).json({ success: true, data: store, ...store });
   }),
 
   /**
    * PUT /api/stores/:id
+   * Updates store details, correctly updating routeId relational foreign key.
    */
   update: catchAsync(async (req: Request, res: Response) => {
     const id = req.params.id as string;
-    const { salesPersonId, ...rest } = req.body as any;
-    const store = await StoreService.update(id, { ...rest, salesPersonId });
+    const { routeId, salesPersonId, ...rest } = req.body as any;
+    const store = await StoreService.update(id, {
+      ...rest,
+      ...(routeId !== undefined
+        ? { routeId: routeId === '' || routeId === null ? null : Number(routeId) }
+        : {}),
+      salesPersonId,
+    });
     res.status(200).json({ success: true, data: store, ...store });
   }),
 
