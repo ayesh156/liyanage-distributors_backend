@@ -1409,12 +1409,12 @@ export const VanStockService = {
   /**
    * Verifies manifest with sales representative digital signature.
    * Evaluates checked items vs unchecked items to determine REP_ACCEPTED or PARTIAL_DISCREPANCY.
-   * Allows signing for any manifest that is DISPATCHED or PENDING regardless of revision number.
+   * Allows active item updates for DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
+   * Only blocks if manifest is strictly ARCHIVED, COMPLETED, or RETURNED.
    */
   async verifyManifestByRep(manifestNo: string, dto: VerifyManifestByRepInput) {
     const code = validateNonEmptyString(manifestNo, 'Manifest Number');
     const rawSignature = dto.repSignature || dto.signatureData || dto.signature;
-    const signatureData = validateSignatureDataUrl(rawSignature, 'Representative Signature');
     const repName = dto.repName?.trim() || 'Kamal Perera';
 
     return await prisma.$transaction(async (tx) => {
@@ -1425,10 +1425,19 @@ export const VanStockService = {
         throw new AppError(`Manifest "${code}" not found.`, 404);
       }
 
-      // Allow signing for any manifest that is DISPATCHED or PENDING regardless of revision number
-      if (manifest.status !== 'DISPATCHED' && manifest.status !== 'PENDING') {
-        throw new AppError('This manifest is archived or already signed.', 400);
+      // Relaxed Status Check: Allow active updates if manifest is DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
+      // Only block the update if the status is strictly ARCHIVED, COMPLETED, or RETURNED.
+      const currentStatus = (manifest.status || '').toUpperCase();
+      const blockedStatuses = ['ARCHIVED', 'COMPLETED', 'RETURNED'];
+      if (blockedStatuses.includes(currentStatus)) {
+        throw new AppError('This manifest is archived or already closed.', 400);
       }
+
+      const effectiveSig = rawSignature || manifest.repSignatureData;
+      if (!effectiveSig) {
+        throw new AppError('Representative Signature is required.', 400);
+      }
+      const signatureData = validateSignatureDataUrl(effectiveSig, 'Representative Signature');
 
       const vehicle = await resolveVehicleContext(manifest.vehicleId, tx);
 
