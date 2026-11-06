@@ -58,11 +58,13 @@ enum PaymentMethod {
 model Store {
   id        String    @id @default(uuid())
   storeCode String?   @unique
-  name      String
+  name                   String
+  category               String               @default("General")
   address   String?   @db.Text
   routeId   Int?
   phone     String?
   salesPersonId String?
+  isActive  Boolean   @default(true) // Soft delete flag: preserves invoice ledger integrity
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -86,6 +88,7 @@ model SalesPerson {
   nic       String?
   email     String?
   address   String?
+  isActive  Boolean   @default(true) // Soft delete flag: preserves sales officer invoice history
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
@@ -99,9 +102,11 @@ model SalesPerson {
 model Route {
   id               Int      @id @default(autoincrement())
   routeCode        String   @unique
-  name             String   @unique
+  name                   String
+  category               String               @default("General")
   areaCoverage     String?
-  deliverySchedule Json?
+  deliverySchedule String?  @db.LongText // Stored as LongText string to preserve existing DB column type and prevent data loss; JSON parsed at application level
+  isActive         Boolean  @default(true) // Soft delete flag: preserves route delivery history
   stores           Store[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -173,4 +178,216 @@ model Payment {
   @@index([invoiceId])
   @@index([date])
   @@map("payments")
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// VAN STOCK & MULTI-LOCATION INVENTORY SUBSYSTEM (DECOUPLED)
+// Standalone models: Zero foreign keys to existing ledger tables
+// ─────────────────────────────────────────────────────────────
+
+enum LocationType {
+  MAIN_STORE       // Central warehouse
+  VEHICLE          // Active field van inventory
+  DAMAGED_GOODS    // Segregated pool for defective/returned goods
+}
+
+enum MovementType {
+  STORE_TO_VEHICLE_LOAD      // Main Store -> Vehicle loading
+  VEHICLE_TO_STORE_RETURN    // Vehicle -> Main Store return of good stock
+  VEHICLE_SALES_OUTBOUND     // Deduction from Vehicle inventory upon shop invoice
+  RETURN_TO_DAMAGED_POOL     // Direct routing of defective/damaged items to segregated pool
+  DAMAGED_WRITE_OFF          // Scrap or write-off from Damaged Goods pool
+  DAMAGED_VENDOR_RETURN      // Return damaged goods to manufacturer/vendor
+  WAREHOUSE_AUDIT_ADJUSTMENT // Physical stocktake audit delta (+/-)
+  SUPPLIER_PURCHASE_INBOUND  // Inbound supplier purchase order receiving
+}
+
+enum DamagedStatus {
+  LOGGED         // Newly reported from the field
+  INSPECTED      // Verified by warehouse manager
+  WRITTEN_OFF    // Approved for scrap
+  VENDOR_RETURN  // Returned to supplier for credit
+}
+
+enum VanStockStatus {
+  PENDING_CONFIRMATION
+  APPROVED
+  REJECTED
+}
+
+// ── Physical / Logical Inventory Locations ──
+model InventoryLocation {
+  id            String        @id // e.g. "LOC_MAIN", "LOC_VAN_01", "LOC_DAMAGED"
+  name          String
+  category      String        @default("General") // "Main Warehouse", "Delivery Van 01", "Damaged Goods Ledger"
+  type          LocationType
+  vehicleId     String?       // "VAN-01" when type == VEHICLE
+  vehicleNumber String?       // e.g. "WP KDK-4521"
+  driverName    String?
+  salesPersonId String?       // Soft reference to sales_persons.id
+  description   String?
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  stockItems  StockItem[]
+
+  @@index([type])
+  @@index([vehicleId])
+  @@map("inventory_locations")
+}
+
+// ── Master Product Catalog ──
+model Product {
+  id                     Int                  @id @default(autoincrement())
+  sku                    String               @unique
+  name                   String
+  category               String               @default("General")
+  unit                   String               @default("Unit")
+  basePrice              Float                @default(0)
+  companyDiscountPercent Float                @default(0)
+  targetCapacity         Float                @default(100) // Default van replenishment par level
+  isActive               Boolean              @default(true)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  stockItems             StockItem[]
+  movementItems          StockMovement[]
+  damagedRecords         DamagedGoodsRecord[]
+
+  @@map("products")
+}
+
+// ── Multi-Location Segregated Stock Item ──
+// Explicit stock tracking per product across distinct inventory locations
+model StockItem {
+  id                     Int               @id @default(autoincrement())
+  locationId             String            // References InventoryLocation.id
+  locationType           LocationType
+  vehicleId              String?           // Convenience column for Vehicle queries
+  productId              Int
+  productName            String
+  sku                    String            @default("")
+  unit                   String            @default("Unit")
+  quantity               Float             @default(0)
+  basePrice              Float             @default(0)
+  companyDiscountPercent Float             @default(0)
+  targetCapacity         Float             @default(100) // Target par level for this specific location
+  status                 VanStockStatus    @default(APPROVED)
+  confirmedBy            String?
+  confirmedAt            DateTime?
+  repChecked             Boolean           @default(false)
+  repCheckedAt           DateTime?
+  discrepancyFlag        Boolean           @default(false)
+  lastUpdatedBy          String?
+  isActive               Boolean           @default(true) // Soft delete flag: preserves warehouse and van stock history
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  location               InventoryLocation @relation(fields: [locationId], references: [id])
+  product                Product           @relation(fields: [productId], references: [id])
+
+  @@unique([locationId, productId])
+  @@index([locationType, vehicleId])
+  @@map("stock_items")
+}
+
+// ── Transactional Stock Movement Audit Ledger ──
+model StockMovement {
+  id              Int          @id @default(autoincrement())
+  movementType    MovementType
+  sourceLocation  String       // e.g. "MAIN", "VAN-01"
+  targetLocation  String       // e.g. "VAN-01", "MAIN", "DAMAGED", "CUSTOMER_OUTBOUND"
+  productId       Int
+  productName     String
+  quantity        Float        @default(0)
+  unitPrice       Float        @default(0)
+  previousQty     Float        @default(0)
+  newQty          Float        @default(0)
+  reference       String?      // e.g. Invoice DocNo "INV-2026-001", Load Sheet ID
+  manifestNo      String?      @default("") // Associated van manifest code e.g. "MAN-20261105-01"
+  performedBy     String?      // User or rep name
+  notes           String?
+  createdAt       DateTime     @default(now())
+
+  product         Product      @relation(fields: [productId], references: [id])
+
+  @@index([movementType])
+  @@index([sourceLocation, targetLocation])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+// ── Dedicated Damaged Goods Ledger (Never contaminates sellable stock) ──
+model DamagedGoodsRecord {
+  id              Int           @id @default(autoincrement())
+  vehicleId       String        // Originating vehicle (e.g. "VAN-01")
+  productId       Int
+  productName     String
+  sku             String        @default("")
+  unit            String        @default("Unit")
+  quantity        Float         @default(0)
+  unitPrice       Float         @default(0)
+  totalValue      Float         @default(0) // Calculated: quantity * unitPrice
+  reason          String        // "Transit Damage", "Manufacturer Defect", "Broken Seal", etc.
+  sourceInvoiceNo String?       // Outbound invoice where return originated
+  manifestNo      String?       @default("") // Associated van manifest code e.g. "MAN-20261105-01"
+  loadDate        DateTime?     // Original date when the batch was loaded onto the vehicle
+  reportedBy      String        // Sales rep or storekeeper
+  status          DamagedStatus @default(LOGGED)
+  isActive        Boolean       @default(true) // Soft delete flag
+  resolutionNotes String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  product         Product       @relation(fields: [productId], references: [id])
+
+  @@index([vehicleId])
+  @@index([status])
+  @@map("damaged_goods_records")
+}
+
+// ── Daily Delivery Van Manifest & Digital Signature Record ──
+model DailyVanManifest {
+  id                 String    @id @default(uuid())
+  manifestNo         String    @unique
+  manifestDate       DateTime  @default(now())
+  vehicleId          String    @default("VAN-01")
+  vehicleNumber      String?
+  driverName         String?
+  routeId            Int?
+  routeName          String?
+  salesPersonId      String?
+  repName            String?
+  repPhone           String?
+  ownerSignatureData String?   @db.LongText
+  ownerSignedBy      String?
+  ownerSignedAt      DateTime?
+  repSignatureData   String?   @db.LongText
+  repSignedBy        String?
+  repSignedAt        DateTime?
+  status             String    @default("DRAFT")
+  manifestRevision   Int       @default(1)
+  uncheckedCount     Int       @default(0)
+  totalUnits         Float     @default(0)
+  totalValue         Float     @default(0)
+  itemsSnapshot      Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([vehicleId])
+  @@index([manifestDate])
+  @@map("daily_van_manifests")
+}
+
+// ── System Setting Model ──
+// Key-value store for application settings (e.g. owner digital signatures)
+model SystemSetting {
+  key       String   @id
+  value     String   @db.LongText
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
 }

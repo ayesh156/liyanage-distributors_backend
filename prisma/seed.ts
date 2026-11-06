@@ -7,32 +7,28 @@
 
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
-import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 import bcrypt from 'bcryptjs';
+import { seedTopSellingProducts } from './seedProducts.ts';
 
-const adapterUrl = process.env.DATABASE_URL;
-if (!adapterUrl) {
-  console.error('❌ DATABASE_URL environment variable is not set.');
-  console.error('   Create a .env file with: DATABASE_URL="mysql://root:password@localhost:3306/liyanage_distributors"');
-  process.exit(1);
-}
-const prisma = new (PrismaClient as any)({
-  adapter: new PrismaMariaDb(adapterUrl) as any,
-});
+const prisma = new PrismaClient();
 
 async function main() {
   console.log('\n═══════════════════════════════════════════════');
   console.log('  DATABASE SEEDER - Liyanage Distributors');
   console.log('═══════════════════════════════════════════════\n');
 
-  // ── Step 1: Clear existing data in dependency order ──────
-  console.log('🗑️  Clearing existing data...');
-  await prisma.payment.deleteMany();
-  await prisma.invoice.deleteMany();
-  await prisma.salesPerson.deleteMany();
-  await prisma.store.deleteMany();
-  await prisma.route.deleteMany();
-  console.log('✅ All tables cleared.\n');
+  // ── Step 1: Optional table purge (Strictly guarded to prevent accidental data loss) ──
+  if (process.env.PURGE_ALL_DATA === 'true') {
+    console.log('🗑️  PURGE_ALL_DATA is set. Clearing existing data in dependency order...');
+    await prisma.payment.deleteMany();
+    await prisma.invoice.deleteMany();
+    await prisma.salesPerson.deleteMany();
+    await prisma.store.deleteMany();
+    await prisma.route.deleteMany();
+    console.log('✅ Tables cleared.\n');
+  } else {
+    console.log('🛡️  Zero-Data-Loss mode active: Preserving all existing Invoices, Payments, Stores, Routes, and SalesPersons.\n');
+  }
 
   // ── Step 1.1: Seed authentication admin user ──────────────
   console.log('🔐 Seeding default admin user...');
@@ -52,16 +48,16 @@ async function main() {
   console.log('🛣️  Seeding Routes...');
 
   const routes = await Promise.all([
-    prisma.route.create({ data: { routeCode: 'RT-001', name: 'Kandy - Central', areaCoverage: 'Kandy commercial zone', deliverySchedule: ['Monday', 'Thursday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-002', name: 'Kurunegala - North Western', areaCoverage: 'Kurunegala wholesale and retail belt', deliverySchedule: ['Tuesday', 'Friday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-003', name: 'Colombo - Western', areaCoverage: 'Colombo metro distribution network', deliverySchedule: ['Monday', 'Wednesday', 'Saturday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-004', name: 'Galle - Southern', areaCoverage: 'Galle town and coastal hardware line', deliverySchedule: ['Wednesday', 'Saturday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-005', name: 'Batticaloa - Eastern', areaCoverage: 'Eastern province industrial route', deliverySchedule: ['Tuesday', 'Thursday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-006', name: 'Matale - Central', areaCoverage: 'Matale and nearby engineering shops', deliverySchedule: ['Friday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-007', name: 'Hambantota - Southern', areaCoverage: 'Hambantota and southern corridor', deliverySchedule: ['Monday', 'Friday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-008', name: 'Wattala - Western', areaCoverage: 'Wattala city and suburbs', deliverySchedule: ['Tuesday', 'Saturday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-009', name: 'Polonnaruwa - North Central', areaCoverage: 'North central mixed retail route', deliverySchedule: ['Thursday'] } }),
-    prisma.route.create({ data: { routeCode: 'RT-010', name: 'Kadawatha - Western', areaCoverage: 'Kadawatha logistics-heavy zone', deliverySchedule: ['Monday', 'Thursday'] } }),
+    prisma.route.create({ data: { routeCode: 'RT-001', name: 'Kandy - Central', areaCoverage: 'Kandy commercial zone', deliverySchedule: JSON.stringify(['Monday', 'Thursday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-002', name: 'Kurunegala - North Western', areaCoverage: 'Kurunegala wholesale and retail belt', deliverySchedule: JSON.stringify(['Tuesday', 'Friday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-003', name: 'Colombo - Western', areaCoverage: 'Colombo metro distribution network', deliverySchedule: JSON.stringify(['Monday', 'Wednesday', 'Saturday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-004', name: 'Galle - Southern', areaCoverage: 'Galle town and coastal hardware line', deliverySchedule: JSON.stringify(['Wednesday', 'Saturday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-005', name: 'Batticaloa - Eastern', areaCoverage: 'Eastern province industrial route', deliverySchedule: JSON.stringify(['Tuesday', 'Thursday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-006', name: 'Matale - Central', areaCoverage: 'Matale and nearby engineering shops', deliverySchedule: JSON.stringify(['Friday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-007', name: 'Hambantota - Southern', areaCoverage: 'Hambantota and southern corridor', deliverySchedule: JSON.stringify(['Monday', 'Friday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-008', name: 'Wattala - Western', areaCoverage: 'Wattala city and suburbs', deliverySchedule: JSON.stringify(['Tuesday', 'Saturday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-009', name: 'Polonnaruwa - North Central', areaCoverage: 'North central mixed retail route', deliverySchedule: JSON.stringify(['Thursday']) } }),
+    prisma.route.create({ data: { routeCode: 'RT-010', name: 'Kadawatha - Western', areaCoverage: 'Kadawatha logistics-heavy zone', deliverySchedule: JSON.stringify(['Monday', 'Thursday']) } }),
   ]);
 
   const routeByName = Object.fromEntries(routes.map((route) => [route.name, route]));
@@ -696,6 +692,9 @@ async function main() {
   }
 
   console.log(`✅ Created ${createdInvoiceCount} invoices with payment records.\n`);
+
+  // ── Step 5: Seed Top-Selling Products & Warehouse Inventory (Non-Destructive) ──
+  await seedTopSellingProducts(prisma);
 
   // ── Summary ────────────────────────────────────────────────
   const summary = {

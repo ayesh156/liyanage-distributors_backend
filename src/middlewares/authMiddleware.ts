@@ -1,4 +1,4 @@
-﻿import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import prisma from '../lib/prisma.ts';
 import authService from '../services/authService.ts';
 
@@ -48,4 +48,38 @@ export async function authMiddleware(
       error: 'Invalid or expired token',
     });
   }
+}
+
+/**
+ * Enforces ADMIN role on protected routes.
+ */
+export function adminOnly(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (!req.user || req.user.role !== 'ADMIN') {
+    res.status(403).json({
+      success: false,
+      error: 'Forbidden. Admin privileges required.',
+    });
+    return;
+  }
+  next();
+}
+
+/**
+ * Higher-order middleware factory for specific role enforcement.
+ */
+export function requireRole(...allowedRoles: string[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      res.status(403).json({
+        success: false,
+        error: `Forbidden. Requires one of roles: ${allowedRoles.join(', ')}`,
+      });
+      return;
+    }
+    next();
+  };
 }

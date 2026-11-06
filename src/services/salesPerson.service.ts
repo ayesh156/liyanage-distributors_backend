@@ -1,4 +1,4 @@
-﻿import prisma from '../lib/prisma.ts';
+import prisma from '../lib/prisma.ts';
 import { AppError } from '../utils/appError.ts';
 import {
   type SalesPersonDTO,
@@ -139,13 +139,12 @@ export class SalesPersonService {
       throw new AppError('Sales person not found', 404);
     }
 
-    if (existing._count.invoices > 0) {
-      throw new AppError(
-        `Cannot delete sales person with ${existing._count.invoices} invoice(s). Archive instead.`,
-        400,
-      );
+    if ((existing._count?.invoices ?? 0) > 0) {
+      throw new AppError('Cannot delete sales person with existing invoices', 400);
     }
 
-    await prisma.salesPerson.delete({ where: { id } });
+    await prisma.salesPerson.delete({
+      where: { id },
+    });
   }
 }

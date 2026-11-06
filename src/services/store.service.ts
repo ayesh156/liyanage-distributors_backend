@@ -190,7 +190,7 @@ export class StoreService {
         assignedRouteId = parsedRouteId;
       }
     } else if (input.route && typeof input.route === 'string' && input.route.trim() !== '') {
-      const matchedRoute = await prisma.route.findUnique({
+      const matchedRoute = await prisma.route.findFirst({
         where: { name: input.route.trim() },
         select: { id: true },
       });
@@ -256,7 +256,7 @@ export class StoreService {
       if (!routeValue) {
         updateData.routeId = null;
       } else {
-        const matchedRoute = await prisma.route.findUnique({
+        const matchedRoute = await prisma.route.findFirst({
           where: { name: routeValue },
           select: { id: true },
         });
@@ -295,6 +295,10 @@ export class StoreService {
    * DELETE /api/stores/:id
    * Prevents deletion if store has existing ledger invoices.
    */
+  /**
+   * DELETE /api/stores/:id
+   * Deletes a store by ID, ensuring no linked invoices exist before deletion.
+   */
   static async delete(id: string): Promise<void> {
     const existing = await prisma.store.findUnique({
       where: { id },
@@ -305,13 +309,12 @@ export class StoreService {
       throw new AppError('Store not found', 404);
     }
 
-    if (existing._count.invoices > 0) {
-      throw new AppError(
-        `Cannot delete store with ${existing._count.invoices} existing invoice(s). Archive instead.`,
-        400,
-      );
+    if ((existing._count?.invoices ?? 0) > 0) {
+      throw new AppError('Cannot delete store with existing invoices', 400);
     }
 
-    await prisma.store.delete({ where: { id } });
+    await prisma.store.delete({
+      where: { id },
+    });
   }
 }
