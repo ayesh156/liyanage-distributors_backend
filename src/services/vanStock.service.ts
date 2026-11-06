@@ -47,6 +47,20 @@ export async function resolveVehicleContext(vehicleId: string = 'VAN-01', tx: an
     rep = await tx.salesPerson.findFirst({ where: { isActive: true }, orderBy: { id: 'asc' } });
   }
 
+  // Resolve persisted vehicle profile settings (e.g. backend vehicle image URL)
+  let vehicleImage = '/images/van/van_active.jpg';
+  try {
+    const profileSetting = await tx.systemSetting.findUnique({
+      where: { key: `VEHICLE_PROFILE_${vehicleId}` },
+    });
+    if (profileSetting) {
+      const parsed = JSON.parse(profileSetting.value);
+      if (parsed.vehicleImage) {
+        vehicleImage = parsed.vehicleImage;
+      }
+    }
+  } catch (_e) {}
+
   return {
     locationId: loc.id,
     id: loc.vehicleId || 'VAN-01',
@@ -64,6 +78,7 @@ export async function resolveVehicleContext(vehicleId: string = 'VAN-01', tx: an
     repName: rep?.name || null,
     repPhone: rep?.phone || null,
     status: 'ACTIVE',
+    vehicleImage,
   };
 }
 
@@ -259,7 +274,7 @@ export const VanStockService = {
           lte: todayEnd,
         },
       },
-      orderBy: { manifestRevision: 'desc' },
+      orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
     });
 
     const vanItems = await prisma.stockItem.findMany({
@@ -1288,39 +1303,93 @@ export const VanStockService = {
         };
       });
 
-      const updated = await tx.dailyVanManifest.upsert({
-        where: { id: targetManifest?.id || 'new-uuid-placeholder' },
-        update: {
-          manifestNo,
-          manifestRevision: nextRev,
-          ownerSignatureData: signatureData || targetManifest?.ownerSignatureData,
-          ownerSignedBy: signer,
-          ownerSignedAt: new Date(),
-          status: 'DISPATCHED',
-          itemsSnapshot: itemsList as any,
-          totalUnits,
-          totalValue: Math.round(totalValue * 100) / 100,
-        },
-        create: {
-          manifestNo,
-          manifestRevision: 1,
-          vehicleId,
-          vehicleNumber: vehicle.vehicleNumber,
-          driverName: vehicle.driverName,
-          routeId: vehicle.routeId,
-          routeName: vehicle.routeName,
-          salesPersonId: vehicle.salesPersonId,
-          repName: vehicle.repName,
-          repPhone: vehicle.repPhone,
-          ownerSignatureData: signatureData,
-          ownerSignedBy: signer,
-          ownerSignedAt: new Date(),
-          status: 'DISPATCHED',
-          itemsSnapshot: itemsList as any,
-          totalUnits,
-          totalValue: Math.round(totalValue * 100) / 100,
-        },
-      });
+      // Revision preservation: if existing revision already dispatched, branch to a new revision record
+      const existingWithNo = await tx.dailyVanManifest.findUnique({ where: { manifestNo } });
+      let updated;
+
+      if (existingWithNo) {
+        updated = await tx.dailyVanManifest.update({
+          where: { id: existingWithNo.id },
+          data: {
+            manifestRevision: nextRev,
+            ownerSignatureData: signatureData || existingWithNo.ownerSignatureData,
+            ownerSignedBy: signer,
+            ownerSignedAt: new Date(),
+            status: 'DISPATCHED',
+            itemsSnapshot: itemsList as any,
+            totalUnits,
+            totalValue: Math.round(totalValue * 100) / 100,
+            repSignatureData: null,
+            repSignedBy: null,
+            repSignedAt: null,
+            uncheckedCount: 0,
+          },
+        });
+      } else if (targetManifest && targetManifest.status !== 'DRAFT') {
+        updated = await tx.dailyVanManifest.create({
+          data: {
+            manifestNo,
+            manifestRevision: nextRev,
+            vehicleId,
+            vehicleNumber: vehicle.vehicleNumber,
+            driverName: vehicle.driverName,
+            routeId: vehicle.routeId,
+            routeName: vehicle.routeName,
+            salesPersonId: vehicle.salesPersonId,
+            repName: vehicle.repName,
+            repPhone: vehicle.repPhone,
+            ownerSignatureData: signatureData || targetManifest.ownerSignatureData,
+            ownerSignedBy: signer,
+            ownerSignedAt: new Date(),
+            status: 'DISPATCHED',
+            itemsSnapshot: itemsList as any,
+            totalUnits,
+            totalValue: Math.round(totalValue * 100) / 100,
+            repSignatureData: null,
+            repSignedBy: null,
+            repSignedAt: null,
+            uncheckedCount: 0,
+          },
+        });
+      } else {
+        updated = await tx.dailyVanManifest.upsert({
+          where: { id: targetManifest?.id || 'new-uuid-placeholder' },
+          update: {
+            manifestNo,
+            manifestRevision: nextRev,
+            ownerSignatureData: signatureData || targetManifest?.ownerSignatureData,
+            ownerSignedBy: signer,
+            ownerSignedAt: new Date(),
+            status: 'DISPATCHED',
+            itemsSnapshot: itemsList as any,
+            totalUnits,
+            totalValue: Math.round(totalValue * 100) / 100,
+            repSignatureData: null,
+            repSignedBy: null,
+            repSignedAt: null,
+            uncheckedCount: 0,
+          },
+          create: {
+            manifestNo,
+            manifestRevision: 1,
+            vehicleId,
+            vehicleNumber: vehicle.vehicleNumber,
+            driverName: vehicle.driverName,
+            routeId: vehicle.routeId,
+            routeName: vehicle.routeName,
+            salesPersonId: vehicle.salesPersonId,
+            repName: vehicle.repName,
+            repPhone: vehicle.repPhone,
+            ownerSignatureData: signatureData,
+            ownerSignedBy: signer,
+            ownerSignedAt: new Date(),
+            status: 'DISPATCHED',
+            itemsSnapshot: itemsList as any,
+            totalUnits,
+            totalValue: Math.round(totalValue * 100) / 100,
+          },
+        });
+      }
 
       return {
         success: true,
@@ -1339,11 +1408,13 @@ export const VanStockService = {
 
   /**
    * Verifies manifest with sales representative digital signature.
-   * Evaluates checked items vs unchecked items to determine FULLY_VERIFIED or PARTIAL_DISCREPANCY.
+   * Evaluates checked items vs unchecked items to determine REP_ACCEPTED or PARTIAL_DISCREPANCY.
+   * Allows signing for any manifest that is DISPATCHED or PENDING regardless of revision number.
    */
   async verifyManifestByRep(manifestNo: string, dto: VerifyManifestByRepInput) {
     const code = validateNonEmptyString(manifestNo, 'Manifest Number');
-    const signatureData = validateSignatureDataUrl(dto.signatureData, 'Representative Signature');
+    const rawSignature = dto.repSignature || dto.signatureData || dto.signature;
+    const signatureData = validateSignatureDataUrl(rawSignature, 'Representative Signature');
     const repName = dto.repName?.trim() || 'Kamal Perera';
 
     return await prisma.$transaction(async (tx) => {
@@ -1352,6 +1423,11 @@ export const VanStockService = {
       });
       if (!manifest) {
         throw new AppError(`Manifest "${code}" not found.`, 404);
+      }
+
+      // Allow signing for any manifest that is DISPATCHED or PENDING regardless of revision number
+      if (manifest.status !== 'DISPATCHED' && manifest.status !== 'PENDING') {
+        throw new AppError('This manifest is archived or already signed.', 400);
       }
 
       const vehicle = await resolveVehicleContext(manifest.vehicleId, tx);
@@ -1366,8 +1442,8 @@ export const VanStockService = {
       if (dto.items && Array.isArray(dto.items)) {
         dto.items.forEach((i) => checkedItemMap.set(i.itemId, Boolean(i.repChecked)));
       } else {
-        // If not itemized in dto, preserve current DB repChecked state
-        vanItems.forEach((i) => checkedItemMap.set(i.id, Boolean(i.repChecked)));
+        // If not itemized in dto, mark all active items as checked (repChecked = true)
+        vanItems.forEach((i) => checkedItemMap.set(i.id, true));
       }
 
       let uncheckedCount = 0;
@@ -1403,7 +1479,8 @@ export const VanStockService = {
         }
       }
 
-      const finalStatus = uncheckedCount === 0 ? 'FULLY_VERIFIED' : 'PARTIAL_DISCREPANCY';
+      // Set status = "REP_ACCEPTED" upon full verification or PARTIAL_DISCREPANCY if items are unchecked
+      const finalStatus = uncheckedCount === 0 ? 'REP_ACCEPTED' : 'PARTIAL_DISCREPANCY';
 
       // Re-snapshot van items
       const updatedVanItems = await tx.stockItem.findMany({
@@ -1450,6 +1527,7 @@ export const VanStockService = {
         uncheckedCount,
         manifest: {
           ...updatedManifest,
+          repSignature: updatedManifest.repSignatureData,
           manifestDate: updatedManifest.manifestDate.toISOString(),
           ownerSignedAt: updatedManifest.ownerSignedAt ? updatedManifest.ownerSignedAt.toISOString() : null,
           repSignedAt: updatedManifest.repSignedAt ? updatedManifest.repSignedAt.toISOString() : null,
@@ -1477,6 +1555,38 @@ export const VanStockService = {
     }
 
     const vehicle = await resolveVehicleContext(manifest.vehicleId, prisma);
+
+    // Active Manifest Resolution: evaluate newest revision for this van on this manifest date
+    const dayStart = new Date(manifest.manifestDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(manifest.manifestDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const latestManifest = await prisma.dailyVanManifest.findFirst({
+      where: {
+        vehicleId: manifest.vehicleId,
+        manifestDate: {
+          gte: dayStart,
+          lte: dayEnd,
+        },
+      },
+      orderBy: [
+        { manifestRevision: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    });
+
+    const isLatestRevision =
+      !latestManifest ||
+      latestManifest.id === manifest.id ||
+      latestManifest.manifestNo === manifest.manifestNo ||
+      latestManifest.manifestRevision <= manifest.manifestRevision;
+
+    const statusUpper = (manifest.status || '').toUpperCase();
+    const requiresRepSignature =
+      statusUpper === 'DISPATCHED' || statusUpper === 'PENDING' || !manifest.repSignatureData;
+    const isActive = isLatestRevision && (requiresRepSignature || statusUpper === 'FULLY_VERIFIED' || statusUpper === 'PARTIAL_DISCREPANCY');
+    const isHistorical = !isLatestRevision;
 
     let items = (manifest.itemsSnapshot as any[]) || [];
     if (!items || items.length === 0) {
@@ -1507,6 +1617,10 @@ export const VanStockService = {
       manifestDate: manifest.manifestDate.toISOString(),
       manifestRevision: manifest.manifestRevision,
       status: manifest.status,
+      isLatestRevision,
+      isActive,
+      isHistorical,
+      latestManifestNo: latestManifest?.manifestNo || manifest.manifestNo,
       vehicle: {
         id: vehicle.vehicleId,
         vehicleNumber: manifest.vehicleNumber || vehicle.vehicleNumber,

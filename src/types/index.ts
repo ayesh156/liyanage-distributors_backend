@@ -574,8 +574,10 @@ export interface SignManifestByOwnerInput {
 }
 
 export interface VerifyManifestByRepInput {
-  manifestNo: string;
-  signatureData: string;
+  manifestNo?: string;
+  signatureData?: string;
+  repSignature?: string;
+  signature?: string;
   repName?: string;
   items?: Array<{
     itemId: number;

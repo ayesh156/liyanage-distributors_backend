@@ -7,6 +7,8 @@ const router = Router();
 // ── Public WhatsApp Field Manifest Verification Endpoints (Zero-Login) ──
 router.get('/share/:manifestNo', ManifestController.getPublicShare);
 router.post('/share/:manifestNo/verify', ManifestController.verifyPublicShare);
+router.put('/share/:manifestNo/sign', ManifestController.signPublicShare);
+router.post('/share/:manifestNo/sign', ManifestController.signPublicShare);
 
 // ── Authenticated Internal Endpoints ──
 router.get('/daily', authMiddleware, ManifestController.getDaily);

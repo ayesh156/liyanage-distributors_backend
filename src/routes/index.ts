@@ -16,6 +16,7 @@ import { getDatabaseHealth } from '../config/database.ts';
 
 import healthRoutes from './health.routes.ts';
 import userRoutes from './userRoutes.ts';
+import settingsRoutes from './settingsRoutes.ts';
 
 const router = Router();
 
@@ -41,5 +42,6 @@ router.use('/reports', reportRoutes);
 router.use('/warehouse', warehouseRoutes);
 router.use('/van-stock', vanStockRoutes);
 router.use('/damaged-goods', damagedGoodsRoutes);
+router.use('/settings', settingsRoutes);
 
 export default router;

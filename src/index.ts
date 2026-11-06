@@ -1,11 +1,17 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { createServer } from 'http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import router from './routes/index.ts';
 // Import singleton Prisma instance and connection handlers
 import prisma, { connectDB, isDbConnected } from './lib/prisma.ts';
+
+// ESM path resolution for static asset serving and file operations
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // -------------------------------------------------------------
 // LIYANAGE DISTRIBUTORS - PRODUCTION REST API SERVER
@@ -55,6 +61,13 @@ app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// --- Static File Serving ---
+// Maps HTTP requests starting with /images directly to the public/images folder
+app.use('/images', express.static(path.join(__dirname, '../public/images')));
+app.use('/images', express.static(path.join(__dirname, 'public/images')));
+app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, 'public')));
+
 // --- Request Logging ---
 app.use((req, res, next) => {
   const start = Date.now();
@@ -86,7 +99,15 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
 
-  res.status(err.status || 500).json({
+  // Gracefully resolve HTTP status code from AppError (statusCode) or Express status, defaulting to 500
+  const statusCode =
+    typeof err.statusCode === 'number'
+      ? err.statusCode
+      : typeof err.status === 'number'
+      ? err.status
+      : 500;
+
+  res.status(statusCode).json({
     success: false,
     error: err.message || 'Internal server error',
   });
