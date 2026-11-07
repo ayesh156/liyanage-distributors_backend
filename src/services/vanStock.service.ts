@@ -102,7 +102,7 @@ export const VanStockService = {
     await ensureDefaultLocations(prisma);
     const vehicle = await resolveVehicleContext(vehicleId, prisma);
 
-    const [vanStockItems, mainStoreItems, allProducts, recentMovements] = await Promise.all([
+    const [vanStockItems, mainStoreItems, allProducts, recentMovements, perpetualStockItems] = await Promise.all([
       prisma.stockItem.findMany({
         where: {
           locationId: vehicle.locationId,
@@ -128,20 +128,32 @@ export const VanStockService = {
         orderBy: { createdAt: 'desc' },
         take: 50,
       }),
+      prisma.vanInventory.findMany({
+        where: { vanId: vehicleId },
+      }),
     ]);
 
     const warehouseStockMap = new Map<number, number>();
     mainStoreItems.forEach((m) => warehouseStockMap.set(m.productId, m.quantity));
+
+    const perpetualStockMap = new Map<string, number>();
+    perpetualStockItems.forEach((p) => perpetualStockMap.set(p.skuId, p.quantity));
 
     let vanTotalValue = 0;
     let vanTotalUnits = 0;
     let pendingConfirmationCount = 0;
 
     const items = vanStockItems.map((item) => {
+      const sku = item.sku || item.product?.sku || '';
+      // Perpetual Mobile Inventory balance: prioritized over legacy manifest date items
+      const currentEffectiveQty = perpetualStockMap.has(sku)
+        ? perpetualStockMap.get(sku)!
+        : item.quantity;
+
       const net = calcNetUnitPrice(item.basePrice, item.companyDiscountPercent);
-      const totalVal = Math.round(net * item.quantity * 100) / 100;
+      const totalVal = Math.round(net * currentEffectiveQty * 100) / 100;
       vanTotalValue += totalVal;
-      vanTotalUnits += item.quantity;
+      vanTotalUnits += currentEffectiveQty;
       if (item.status === 'PENDING_CONFIRMATION') {
         pendingConfirmationCount += 1;
       }
@@ -153,10 +165,10 @@ export const VanStockService = {
         vehicleId: item.vehicleId,
         productId: item.productId,
         productName: item.productName,
-        sku: item.sku || item.product?.sku || '',
+        sku,
         unit: item.unit || item.product?.unit || 'Unit',
         category: item.product?.category || 'General',
-        quantity: item.quantity,
+        quantity: currentEffectiveQty,
         basePrice: item.basePrice,
         companyDiscountPercent: item.companyDiscountPercent,
         netUnitPrice: net,
@@ -484,7 +496,27 @@ export const VanStockService = {
 
       const netPrice = calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
 
-      // 3. Log movement
+      // 3. Update perpetual VanInventory model
+      if (product.sku) {
+        await tx.vanInventory.upsert({
+          where: {
+            vanId_skuId: {
+              vanId: vehicleId,
+              skuId: product.sku,
+            },
+          },
+          update: {
+            quantity: { increment: Math.round(qty) },
+          },
+          create: {
+            vanId: vehicleId,
+            skuId: product.sku,
+            quantity: Math.round(qty),
+          },
+        });
+      }
+
+      // 4. Log movement
       const movement = await tx.stockMovement.create({
         data: {
           movementType: 'STORE_TO_VEHICLE_LOAD',
@@ -616,6 +648,26 @@ export const VanStockService = {
         });
       }
 
+      // Sync perpetual VanInventory upon manual quantity modification
+      if (product.sku) {
+        await tx.vanInventory.upsert({
+          where: {
+            vanId_skuId: {
+              vanId: vehicleId,
+              skuId: product.sku,
+            },
+          },
+          update: {
+            quantity: Math.round(targetQty),
+          },
+          create: {
+            vanId: vehicleId,
+            skuId: product.sku,
+            quantity: Math.round(targetQty),
+          },
+        });
+      }
+
       const netPrice = calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
       const movementType = delta > 0 ? 'STORE_TO_VEHICLE_LOAD' : 'VEHICLE_TO_STORE_RETURN';
 
@@ -697,6 +749,27 @@ export const VanStockService = {
           },
         });
 
+        // Decrement perpetual VanInventory balance
+        const skuToDecrement = vanItem.sku || vanItem.product?.sku;
+        if (skuToDecrement) {
+          const currentPerpetual = await tx.vanInventory.findUnique({
+            where: {
+              vanId_skuId: {
+                vanId: vehicleId,
+                skuId: skuToDecrement,
+              },
+            },
+          });
+          if (currentPerpetual) {
+            await tx.vanInventory.update({
+              where: { id: currentPerpetual.id },
+              data: {
+                quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
+              },
+            });
+          }
+        }
+
         const netPrice = item.unitPrice || calcNetUnitPrice(vanItem.basePrice, vanItem.companyDiscountPercent);
 
         const movement = await tx.stockMovement.create({
@@ -769,6 +842,27 @@ export const VanStockService = {
           lastUpdatedBy: user.username,
         },
       });
+
+      // Decrement perpetual VanInventory balance
+      const skuToReturn = vanItem.sku;
+      if (skuToReturn) {
+        const currentPerpetual = await tx.vanInventory.findUnique({
+          where: {
+            vanId_skuId: {
+              vanId: vehicleId,
+              skuId: skuToReturn,
+            },
+          },
+        });
+        if (currentPerpetual) {
+          await tx.vanInventory.update({
+            where: { id: currentPerpetual.id },
+            data: {
+              quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
+            },
+          });
+        }
+      }
 
       // Increment warehouse
       const warehouseStock = await tx.stockItem.findUnique({
@@ -935,6 +1029,27 @@ export const VanStockService = {
             lastUpdatedBy: user.username,
           },
         });
+
+        // Decrement perpetual VanInventory if defect is quarantined from van
+        if (fromLocation === 'VEHICLE' && product.sku) {
+          const vehicleId = dto.vehicleId || 'VAN-01';
+          const currentPerpetual = await tx.vanInventory.findUnique({
+            where: {
+              vanId_skuId: {
+                vanId: vehicleId,
+                skuId: product.sku,
+              },
+            },
+          });
+          if (currentPerpetual) {
+            await tx.vanInventory.update({
+              where: { id: currentPerpetual.id },
+              data: {
+                quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
+              },
+            });
+          }
+        }
       }
 
       // 2. Add to Quarantined Pool
@@ -1529,6 +1644,33 @@ export const VanStockService = {
           itemsSnapshot: itemsList as any,
         },
       });
+
+      // Increment perpetual VanInventory for accepted manifest items
+      if (finalStatus === 'REP_ACCEPTED') {
+        for (const item of updatedVanItems) {
+          if (item.repChecked && item.quantity > 0) {
+            const sku = item.sku || item.product?.sku;
+            if (sku) {
+              await tx.vanInventory.upsert({
+                where: {
+                  vanId_skuId: {
+                    vanId: manifest.vehicleId || 'VAN-01',
+                    skuId: sku,
+                  },
+                },
+                update: {
+                  quantity: { increment: Math.round(item.quantity) },
+                },
+                create: {
+                  vanId: manifest.vehicleId || 'VAN-01',
+                  skuId: sku,
+                  quantity: Math.round(item.quantity),
+                },
+              });
+            }
+          }
+        }
+      }
 
       return {
         success: true,

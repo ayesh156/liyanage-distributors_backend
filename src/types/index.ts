@@ -550,6 +550,7 @@ export interface ReturnToStoreInput {
 
 export interface QuarantineDamagedInput {
   productId: number;
+  vehicleId?: string;
   fromLocation?: 'VEHICLE' | 'MAIN_STORE';
   quantity: number;
   reason: string;

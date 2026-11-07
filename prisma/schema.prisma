@@ -255,6 +255,7 @@ model Product {
   stockItems             StockItem[]
   movementItems          StockMovement[]
   damagedRecords         DamagedGoodsRecord[]
+  vanInventories         VanInventory[]
 
   @@map("products")
 }
@@ -390,4 +391,22 @@ model SystemSetting {
   updatedAt DateTime @updatedAt
 
   @@map("system_settings")
+}
+
+// ── Perpetual Mobile Van Inventory Model ──
+// Represents the continuous, non-date-bound on-hand balance for a van mobile warehouse
+model VanInventory {
+  id        String   @id @default(uuid())
+  vanId     String   // Identifies vehicle (e.g. "VAN-01")
+  skuId     String   // References Product.sku
+  quantity  Int      @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  product   Product? @relation(fields: [skuId], references: [sku], onDelete: Cascade)
+
+  @@unique([vanId, skuId])
+  @@index([vanId])
+  @@index([skuId])
+  @@map("van_inventory")
 }

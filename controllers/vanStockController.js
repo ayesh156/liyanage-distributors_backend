@@ -194,6 +194,33 @@ export const vanStockController = {
         },
       });
 
+      // Synchronize perpetual VanInventory when manifest is accepted by representative
+      if (finalStatus === 'REP_ACCEPTED' && manifest.vehicleId) {
+        const itemsToIncrement = itemsSnapshot.length > 0 ? itemsSnapshot : [];
+        for (const item of itemsToIncrement) {
+          const sku = item.sku;
+          const qty = Math.round(Number(item.quantity) || 0);
+          if (sku && qty > 0) {
+            await prisma.vanInventory.upsert({
+              where: {
+                vanId_skuId: {
+                  vanId: manifest.vehicleId,
+                  skuId: sku,
+                },
+              },
+              update: {
+                quantity: { increment: qty },
+              },
+              create: {
+                vanId: manifest.vehicleId,
+                skuId: sku,
+                quantity: qty,
+              },
+            });
+          }
+        }
+      }
+
       return res.status(200).json({
         success: true,
         data: {
@@ -209,6 +236,117 @@ export const vanStockController = {
         error: 'Database error occurred while processing representative signature.',
       });
     }
+  },
+
+  /**
+   * POST /api/van-stock/sales (Perpetual Inventory Deduction)
+   * Decrements quantity in VanInventory upon completing a Road Sale.
+   */
+  async recordRoadSale(req, res) {
+    try {
+      const { vehicleId = 'VAN-01', items, customerName, invoiceNo, performedBy } = req.body || {};
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ success: false, error: 'Sale items array is required.' });
+      }
+
+      const results = [];
+      for (const item of items) {
+        const sku = item.sku || item.skuId;
+        const qty = Math.round(Number(item.quantity) || 0);
+        if (!sku || qty <= 0) continue;
+
+        const current = await prisma.vanInventory.findUnique({
+          where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+        });
+
+        const newQty = current ? Math.max(0, current.quantity - qty) : 0;
+        const updated = await prisma.vanInventory.upsert({
+          where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+          update: { quantity: newQty },
+          create: { vanId: vehicleId, skuId: sku, quantity: 0 },
+        });
+
+        results.push(updated);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Road sale recorded and perpetual inventory decremented.',
+        data: results,
+      });
+    } catch (error) {
+      console.error('[vanStockController.recordRoadSale] Error recording road sale:', error);
+      return res.status(500).json({ success: false, error: 'Failed to record road sale perpetual inventory.' });
+    }
+  },
+
+  /**
+   * POST /api/van-stock/quarantine-defect (Perpetual Inventory Quarantine)
+   * Decrements quantity in VanInventory when a defect is quarantined from van.
+   */
+  async quarantineDefect(req, res) {
+    try {
+      const { vehicleId = 'VAN-01', sku, quantity, reason } = req.body || {};
+      const qty = Math.round(Number(quantity) || 0);
+      if (!sku || qty <= 0) {
+        return res.status(400).json({ success: false, error: 'Valid SKU and positive quantity required.' });
+      }
+
+      const current = await prisma.vanInventory.findUnique({
+        where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+      });
+
+      const newQty = current ? Math.max(0, current.quantity - qty) : 0;
+      const updated = await prisma.vanInventory.upsert({
+        where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+        update: { quantity: newQty },
+        create: { vanId: vehicleId, skuId: sku, quantity: 0 },
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Defect quarantined and perpetual inventory decremented.',
+        data: updated,
+      });
+    } catch (error) {
+      console.error('[vanStockController.quarantineDefect] Error quarantining defect:', error);
+      return res.status(500).json({ success: false, error: 'Failed to quarantine defect from van inventory.' });
+    }
+  },
+
+  /**
+   * POST /api/van-stock/return (Perpetual Inventory Return to Warehouse)
+   * Decrements quantity in VanInventory when stock is returned to central warehouse.
+   */
+  async returnToWarehouse(req, res) {
+    try {
+      const { vehicleId = 'VAN-01', sku, quantity } = req.body || {};
+      const qty = Math.round(Number(quantity) || 0);
+      if (!sku || qty <= 0) {
+        return res.status(400).json({ success: false, error: 'Valid SKU and positive quantity required.' });
+      }
+
+      const current = await prisma.vanInventory.findUnique({
+        where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+      });
+
+      const newQty = current ? Math.max(0, current.quantity - qty) : 0;
+      const updated = await prisma.vanInventory.upsert({
+        where: { vanId_skuId: { vanId: vehicleId, skuId: sku } },
+        update: { quantity: newQty },
+        create: { vanId: vehicleId, skuId: sku, quantity: 0 },
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Stock returned to warehouse and perpetual inventory decremented.',
+        data: updated,
+      });
+    } catch (error) {
+      console.error('[vanStockController.returnToWarehouse] Error returning to warehouse:', error);
+      return res.status(500).json({ success: false, error: 'Failed to return stock to warehouse.' });
+    }
+  },
   },
 };
 
