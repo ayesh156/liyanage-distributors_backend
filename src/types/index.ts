@@ -148,8 +148,14 @@ export interface PaymentDTO {
   date: string;
   amountPaid: number;
   description?: string;
+  notes?: string;
   paymentMethod: PaymentMethod;
   chequeNo?: string;
+  chequeNumber?: string;
+  referenceNo?: string;
+  bankName?: string;
+  branchName?: string;
+  recordedBy?: string;
   invoiceId: string;
   invoiceDocumentNo?: string;
   invoiceAmount?: number;

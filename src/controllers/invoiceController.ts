@@ -1,4 +1,4 @@
-﻿import prisma from '../lib/prisma.ts';
+import prisma from '../lib/prisma.ts';
 import { PaymentMethod } from '@prisma/client';
 
 interface PaymentPayload {
@@ -265,16 +265,41 @@ const invoiceController = {
             salesPerson: { select: { id: true, name: true } },
             payments: {
               orderBy: { date: 'desc' },
-              select: { id: true, date: true, amountPaid: true, description: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
+              select: {
+                id: true,
+                date: true,
+                amountPaid: true,
+                description: true,
+                paymentMethod: true,
+                chequeNo: true,
+                bankName: true,
+                branchName: true,
+                createdAt: true,
+                invoiceId: true,
+              },
             },
           },
         }),
         prisma.invoice.count({ where }),
       ]);
 
+      // Enrich payments with all payment metadata fields
+      const enrichedInvoices = invoices.map((inv: any) => ({
+        ...inv,
+        payments: (inv.payments || []).map((p: any) => ({
+          ...p,
+          chequeNumber: p.chequeNo ?? null,
+          bankName: p.bankName ?? null,
+          branchName: p.branchName ?? null,
+          referenceNo: p.chequeNo ?? null,
+          notes: p.description ?? null,
+          recordedBy: inv.salesPerson?.name ?? null,
+        })),
+      }));
+
       res.json({
         success: true,
-        data: invoices,
+        data: enrichedInvoices,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -375,7 +400,18 @@ const invoiceController = {
           },
           payments: {
             orderBy: { date: 'asc' },
-            select: { id: true, date: true, amountPaid: true, description: true, paymentMethod: true, chequeNo: true, bankName: true, branchName: true },
+            select: {
+              id: true,
+              date: true,
+              amountPaid: true,
+              description: true,
+              paymentMethod: true,
+              chequeNo: true,
+              bankName: true,
+              branchName: true,
+              createdAt: true,
+              invoiceId: true,
+            },
           },
         },
       });
@@ -412,6 +448,15 @@ const invoiceController = {
             route: resolvedRouteName,
             routeName: resolvedRouteName,
           },
+          payments: (invoice.payments || []).map((p: any) => ({
+            ...p,
+            chequeNumber: p.chequeNo ?? null,
+            bankName: p.bankName ?? null,
+            branchName: p.branchName ?? null,
+            referenceNo: p.chequeNo ?? null,
+            notes: p.description ?? null,
+            recordedBy: invoice.salesPerson?.name ?? null,
+          })),
         };
       });
 
@@ -515,7 +560,18 @@ const invoiceController = {
         return res.status(404).json({ success: false, error: 'Invoice not found' });
       }
 
-      res.json({ success: true, data: invoice });
+      // Enrich payments with all payment metadata fields
+      const enrichedPayments = (invoice.payments || []).map((p: any) => ({
+        ...p,
+        chequeNumber: p.chequeNo ?? null,
+        bankName: p.bankName ?? null,
+        branchName: p.branchName ?? null,
+        referenceNo: p.chequeNo ?? null,
+        notes: p.description ?? null,
+        recordedBy: invoice.salesPerson?.name ?? null,
+      }));
+
+      res.json({ success: true, data: { ...invoice, payments: enrichedPayments } });
     } catch (error) {
       console.error('Error getting invoice:', error);
       res.status(500).json({ success: false, error: error.message });
@@ -542,7 +598,18 @@ const invoiceController = {
         return res.status(404).json({ success: false, error: 'Invoice not found' });
       }
 
-      res.json({ success: true, data: invoice });
+      // Enrich payments with all payment metadata fields
+      const enrichedPayments = (invoice.payments || []).map((p: any) => ({
+        ...p,
+        chequeNumber: p.chequeNo ?? null,
+        bankName: p.bankName ?? null,
+        branchName: p.branchName ?? null,
+        referenceNo: p.chequeNo ?? null,
+        notes: p.description ?? null,
+        recordedBy: invoice.salesPerson?.name ?? null,
+      }));
+
+      res.json({ success: true, data: { ...invoice, payments: enrichedPayments } });
     } catch (error) {
       console.error('Error getting invoice by document no:', error);
       res.status(500).json({ success: false, error: error.message });

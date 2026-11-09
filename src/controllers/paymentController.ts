@@ -1,4 +1,4 @@
-﻿import prisma from '../lib/prisma.ts';
+import prisma from '../lib/prisma.ts';
 import { PaymentMethod } from '@prisma/client';
 
 interface PaymentPayload {
@@ -176,6 +176,7 @@ const paymentController = {
                 balanceDue: true,
                 status: true,
                 store: { select: { id: true, name: true } },
+                salesPerson: { select: { id: true, name: true } },
               },
             },
           },
@@ -183,9 +184,20 @@ const paymentController = {
         prisma.payment.count({ where }),
       ]);
 
+      // Enrich payments with all payment metadata fields
+      const enrichedPayments = payments.map((p: any) => ({
+        ...p,
+        chequeNumber: p.chequeNo ?? null,
+        bankName: p.bankName ?? null,
+        branchName: p.branchName ?? null,
+        referenceNo: p.chequeNo ?? null,
+        notes: p.description ?? null,
+        recordedBy: p.invoice?.salesPerson?.name ?? null,
+      }));
+
       res.json({
         success: true,
-        data: payments,
+        data: enrichedPayments,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -206,7 +218,7 @@ const paymentController = {
   async getById(req, res) {
     try {
       const { id } = req.params;
-      const payment = await prisma.payment.findUnique({
+      const payment: any = await prisma.payment.findUnique({
         where: { id },
         include: {
           invoice: {
@@ -222,7 +234,18 @@ const paymentController = {
         return res.status(404).json({ success: false, error: 'Payment not found' });
       }
 
-      res.json({ success: true, data: payment });
+      // Enrich payment with all payment metadata fields
+      const enrichedPayment = {
+        ...payment,
+        chequeNumber: payment.chequeNo ?? null,
+        bankName: payment.bankName ?? null,
+        branchName: payment.branchName ?? null,
+        referenceNo: payment.chequeNo ?? null,
+        notes: payment.description ?? null,
+        recordedBy: payment.invoice?.salesPerson?.name ?? null,
+      };
+
+      res.json({ success: true, data: enrichedPayment });
     } catch (error) {
       console.error('Error getting payment:', error);
       res.status(500).json({ success: false, error: error.message });
@@ -387,12 +410,22 @@ const paymentController = {
         return { payment, invoice: refreshedInvoice };
       });
 
-      // â”€â”€ Success Response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // Enrich collected payment with all metadata fields
+      const enrichedPayment = {
+        ...result.payment,
+        chequeNumber: result.payment.chequeNo ?? null,
+        bankName: result.payment.bankName ?? null,
+        branchName: result.payment.branchName ?? null,
+        referenceNo: result.payment.chequeNo ?? null,
+        notes: result.payment.description ?? null,
+      };
+
+      // ── Success Response ──────────────────────────────────────────
       res.status(201).json({
         success: true,
         message: 'Payment collected successfully',
         data: {
-          payment: result.payment,
+          payment: enrichedPayment,
           invoice: result.invoice,
         },
       });

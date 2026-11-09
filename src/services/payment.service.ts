@@ -1,4 +1,4 @@
-﻿import prisma from '../lib/prisma.ts';
+import prisma from '../lib/prisma.ts';
 import { AppError } from '../utils/appError.ts';
 import {
   PaymentDTO,
@@ -14,8 +14,14 @@ function toDTO(record: any): PaymentDTO {
     date: record.date?.toISOString?.() || record.date,
     amountPaid: Number(record.amountPaid),
     description: record.description ?? undefined,
+    notes: record.description ?? undefined,
     paymentMethod: record.paymentMethod as PaymentDTO['paymentMethod'],
     chequeNo: record.chequeNo ?? undefined,
+    chequeNumber: record.chequeNo ?? undefined,
+    referenceNo: record.chequeNo ?? undefined,
+    bankName: record.bankName ?? undefined,
+    branchName: record.branchName ?? undefined,
+    recordedBy: record.invoice?.salesPerson?.name ?? undefined,
     invoiceId: record.invoiceId,
     invoiceDocumentNo: record.invoice?.documentNo ?? undefined,
     invoiceAmount: record.invoice?.amount ? Number(record.invoice.amount) : undefined,
@@ -58,6 +64,7 @@ export class PaymentService {
               balanceDue: true,
               status: true,
               store: { select: { id: true, name: true } },
+              salesPerson: { select: { id: true, name: true } },
             },
           },
         },

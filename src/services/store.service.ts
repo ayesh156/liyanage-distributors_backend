@@ -149,9 +149,24 @@ export class StoreService {
       throw new AppError('Store not found', 404);
     }
 
+    // Ensure all payment metadata fields (chequeNumber, bankName, referenceNo, notes, recordedBy)
+    // are explicitly enriched in returned customer invoice payments for store/ledger history
+    const mappedInvoices = (item.invoices || []).map((inv: any) => ({
+      ...inv,
+      payments: (inv.payments || []).map((p: any) => ({
+        ...p,
+        chequeNumber: p.chequeNo ?? null,
+        bankName: p.bankName ?? null,
+        branchName: p.branchName ?? null,
+        referenceNo: p.chequeNo ?? null,
+        notes: p.description ?? null,
+        recordedBy: inv.salesPerson?.name ?? item.salesPerson?.name ?? null,
+      })),
+    }));
+
     return {
       ...toDTO(item),
-      invoices: item.invoices,
+      invoices: mappedInvoices,
     } as any;
   }
 
