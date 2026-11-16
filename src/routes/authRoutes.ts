@@ -1,7 +1,7 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import authController from '../controllers/authController.ts';
 
-const router = Router();
+const router = express.Router();
 
 router.options('/login', (req, res) => res.sendStatus(204));
 router.post('/login', authController.login);

@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import express from 'express';
 import { settingsController } from '../controllers/settingsController.ts';
 import { adminOnly } from '../middlewares/authMiddleware.ts';
 
-const router = Router();
+const router = express.Router();
 
 // Vehicle Profile & Physical Image Persistence Routes
 router.get('/vehicle', settingsController.getVehicleProfile);

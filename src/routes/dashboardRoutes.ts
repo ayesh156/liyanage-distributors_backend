@@ -1,7 +1,7 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import dashboardController from '../controllers/dashboardController.ts';
 
-const router = Router();
+const router = express.Router();
 
 // GET /api/dashboard/analytics
 router.get('/analytics', dashboardController.analytics);

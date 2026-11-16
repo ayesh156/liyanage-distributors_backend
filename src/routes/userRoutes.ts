@@ -1,7 +1,7 @@
-import { Router } from 'express';
+import express from 'express';
 import userController from '../controllers/userController.ts';
 
-const userRoutes = Router();
+const userRoutes = express.Router();
 
 /**
  * Self-service Profile Routes

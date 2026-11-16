@@ -1,20 +1,22 @@
-import { Router } from 'express';
+import express from 'express';
 import { ManifestController } from '../controllers/manifest.controller.ts';
 import { authMiddleware, adminOnly } from '../middlewares/authMiddleware.ts';
 
-const router = Router();
-
-// ── Public WhatsApp Field Manifest Verification Endpoints (Zero-Login) ──
-router.get('/share/:manifestNo', ManifestController.getPublicShare);
-router.post('/share/:manifestNo/verify', ManifestController.verifyPublicShare);
-router.put('/share/:manifestNo/sign', ManifestController.signPublicShare);
-router.post('/share/:manifestNo/sign', ManifestController.signPublicShare);
+const router = express.Router();
 
 // ── Authenticated Internal Endpoints ──
-router.get('/daily', authMiddleware, ManifestController.getDaily);
-router.get('/history', authMiddleware, ManifestController.getHistory);
-router.post('/sign-owner', authMiddleware, adminOnly, ManifestController.signByOwner);
-router.post('/verify-rep', authMiddleware, ManifestController.verifyByRep);
+router.use(authMiddleware);
+router.get('/daily', ManifestController.getDaily);
+router.get('/history', ManifestController.getHistory);
+router.post('/sign-owner', adminOnly, ManifestController.signByOwner);
+router.post('/verify-rep', ManifestController.verifyByRep);
+router.post('/sign', ManifestController.verifyByRep);
+router.post('/reconcile-evening', ManifestController.reconcileEvening);
+router.post('/toggle-item-check', ManifestController.toggleItemCheck);
+
+// -- Unified In-App Saved Signatures Endpoints --
+router.get('/saved-signatures', ManifestController.getSavedSignatures);
+router.post('/saved-signatures', ManifestController.saveSignature);
 
 export default router;
 

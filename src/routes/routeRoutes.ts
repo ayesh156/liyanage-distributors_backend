@@ -1,7 +1,7 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import routeController from '../controllers/routeController.ts';
 
-const router = Router();
+const router = express.Router();
 
 // GET /api/routes
 router.get('/', routeController.list);

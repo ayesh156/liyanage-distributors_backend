@@ -1,4 +1,4 @@
-﻿import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/appError.ts';
 import { Prisma } from '@prisma/client';
 
@@ -86,12 +86,12 @@ export function errorHandler(
 
   // Logging
   if (error.statusCode >= 500) {
-    console.error(`[ERROR] ${error.statusCode} â€” ${error.message}`);
+    console.error(`[ERROR] ${error.statusCode} - ${error.message}`);
     if (!error.isOperational) {
       console.error(err.stack);
     }
   } else {
-    console.warn(`[WARN] ${error.statusCode} â€” ${error.message}`);
+    console.warn(`[WARN] ${error.statusCode} - ${error.message}`);
   }
 
   // Response

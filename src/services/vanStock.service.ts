@@ -17,6 +17,7 @@ import type {
   UpdateDamagedStatusInput,
   SignManifestByOwnerInput,
   VerifyManifestByRepInput,
+  ReconcileEveningChecksInput,
   DamagedGoodsQueryParams,
 } from '../types/index.ts';
 
@@ -59,7 +60,7 @@ export async function resolveVehicleContext(vehicleId: string = 'VAN-01', tx: an
         vehicleImage = parsed.vehicleImage;
       }
     }
-  } catch (_e) {}
+  } catch (_e) { }
 
   return {
     locationId: loc.id,
@@ -102,7 +103,12 @@ export const VanStockService = {
     await ensureDefaultLocations(prisma);
     const vehicle = await resolveVehicleContext(vehicleId, prisma);
 
-    const [vanStockItems, mainStoreItems, allProducts, recentMovements, perpetualStockItems] = await Promise.all([
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    const [vanStockItems, mainStoreItems, allProducts, recentMovements, todayManifest] = await Promise.all([
       prisma.stockItem.findMany({
         where: {
           locationId: vehicle.locationId,
@@ -128,16 +134,24 @@ export const VanStockService = {
         orderBy: { createdAt: 'desc' },
         take: 50,
       }),
-      prisma.vanInventory.findMany({
-        where: { vanId: vehicleId },
+      prisma.dailyVanManifest.findFirst({
+        where: {
+          vehicleId,
+          manifestDate: { gte: todayStart, lte: todayEnd },
+        },
+        orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
       }),
     ]);
 
     const warehouseStockMap = new Map<number, number>();
     mainStoreItems.forEach((m) => warehouseStockMap.set(m.productId, m.quantity));
 
-    const perpetualStockMap = new Map<string, number>();
-    perpetualStockItems.forEach((p) => perpetualStockMap.set(p.skuId, p.quantity));
+    const snapshotMap = new Map<number, any>();
+    if (todayManifest && Array.isArray(todayManifest.itemsSnapshot)) {
+      (todayManifest.itemsSnapshot as any[]).forEach((s) => {
+        if (s && s.id) snapshotMap.set(s.id, s);
+      });
+    }
 
     let vanTotalValue = 0;
     let vanTotalUnits = 0;
@@ -145,10 +159,8 @@ export const VanStockService = {
 
     const items = vanStockItems.map((item) => {
       const sku = item.sku || item.product?.sku || '';
-      // Perpetual Mobile Inventory balance: prioritized over legacy manifest date items
-      const currentEffectiveQty = perpetualStockMap.has(sku)
-        ? perpetualStockMap.get(sku)!
-        : item.quantity;
+      // Canonical StockItem vehicle balance
+      const currentEffectiveQty = item.quantity;
 
       const net = calcNetUnitPrice(item.basePrice, item.companyDiscountPercent);
       const totalVal = Math.round(net * currentEffectiveQty * 100) / 100;
@@ -157,6 +169,8 @@ export const VanStockService = {
       if (item.status === 'PENDING_CONFIRMATION') {
         pendingConfirmationCount += 1;
       }
+
+      const snap = snapshotMap.get(item.id);
 
       return {
         id: item.id,
@@ -177,9 +191,10 @@ export const VanStockService = {
         status: item.status,
         confirmedBy: item.confirmedBy,
         confirmedAt: item.confirmedAt ? item.confirmedAt.toISOString() : null,
-        repChecked: item.repChecked,
-        repCheckedAt: item.repCheckedAt ? item.repCheckedAt.toISOString() : null,
-        discrepancyFlag: item.discrepancyFlag,
+        repChecked: snap ? Boolean(snap.repChecked) : false,
+        eveningReconciled: snap ? Boolean(snap.eveningReconciled) : false,
+        repCheckedAt: snap?.repCheckedAt ? String(snap.repCheckedAt) : null,
+        discrepancyFlag: snap ? Boolean(snap.discrepancyFlag) : false,
         isActive: item.isActive,
       };
     });
@@ -268,22 +283,30 @@ export const VanStockService = {
   /**
    * Retrieves today's DailyVanManifest or creates/upserts a daily draft.
    */
-  async getDailyManifest(vehicleId: string = 'VAN-01') {
+  async getDailyManifest(vehicleId: string = 'VAN-01', dateStr?: string) {
     await ensureDefaultLocations(prisma);
     const vehicle = await resolveVehicleContext(vehicleId, prisma);
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    let targetDate = new Date();
+    if (dateStr) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        targetDate = new Date(y, m - 1, d, 12, 0, 0);
+      }
+    }
 
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    const dayStart = new Date(targetDate);
+    dayStart.setHours(0, 0, 0, 0);
+
+    const dayEnd = new Date(targetDate);
+    dayEnd.setHours(23, 59, 59, 999);
 
     let manifest = await prisma.dailyVanManifest.findFirst({
       where: {
         vehicleId,
         manifestDate: {
-          gte: todayStart,
-          lte: todayEnd,
+          gte: dayStart,
+          lte: dayEnd,
         },
       },
       orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
@@ -299,6 +322,20 @@ export const VanStockService = {
       orderBy: { productName: 'asc' },
     });
 
+    const snapshotMap = new Map<number, any>();
+    if (manifest && Array.isArray(manifest.itemsSnapshot)) {
+      (manifest.itemsSnapshot as any[]).forEach((s) => {
+        if (s && s.id) snapshotMap.set(s.id, s);
+      });
+    }
+
+    const morningCheckedArr: string[] = Array.isArray(manifest?.morningCheckedItems)
+      ? (manifest?.morningCheckedItems as any[]).map(String)
+      : [];
+    const eveningCheckedArr: string[] = Array.isArray(manifest?.eveningCheckedItems)
+      ? (manifest?.eveningCheckedItems as any[]).map(String)
+      : [];
+
     let totalUnits = 0;
     let totalValue = 0;
     const itemsList = vanItems.map((item) => {
@@ -306,44 +343,50 @@ export const VanStockService = {
       const val = Math.round(net * item.quantity * 100) / 100;
       totalUnits += item.quantity;
       totalValue += val;
+      const snap = snapshotMap.get(item.id);
+
+      const sku = item.sku || item.product?.sku || '';
+      const pidStr = item.productId ? String(item.productId) : '';
+      const idStr = String(item.id);
+
+      const isMorning = Boolean(
+        snap?.repChecked ||
+        (sku && morningCheckedArr.includes(sku)) ||
+        (pidStr && morningCheckedArr.includes(pidStr)) ||
+        morningCheckedArr.includes(idStr)
+      );
+
+      const isEvening = Boolean(
+        snap?.eveningReconciled ||
+        (sku && eveningCheckedArr.includes(sku)) ||
+        (pidStr && eveningCheckedArr.includes(pidStr)) ||
+        eveningCheckedArr.includes(idStr)
+      );
+
       return {
         id: item.id,
         productId: item.productId,
         productName: item.productName,
-        sku: item.sku || item.product?.sku || '',
+        sku,
         unit: item.unit || item.product?.unit || 'Unit',
         quantity: item.quantity,
         basePrice: item.basePrice,
         discountPercent: item.companyDiscountPercent,
         netUnitPrice: net,
         totalValue: val,
-        repChecked: item.repChecked,
-        repCheckedAt: item.repCheckedAt ? item.repCheckedAt.toISOString() : null,
-        discrepancyFlag: item.discrepancyFlag,
+        repChecked: isMorning,
+        eveningReconciled: isEvening,
+        repCheckedAt: snap?.repCheckedAt ? String(snap.repCheckedAt) : null,
+        discrepancyFlag: snap ? Boolean(snap.discrepancyFlag) : false,
         status: item.status,
       };
     });
 
     if (!manifest) {
-      const defaultOwnerSetting = await prisma.systemSetting.findUnique({
-        where: { key: 'OWNER_DISPATCHER_SIGNATURE' },
-      });
-      let defaultSig = null;
-      let defaultSigner = 'W. Liyanage (Managing Director / Owner)';
-      if (defaultOwnerSetting) {
-        try {
-          const parsed = JSON.parse(defaultOwnerSetting.value);
-          defaultSig = parsed.signatureData || null;
-          defaultSigner = parsed.signerName || defaultSigner;
-        } catch {
-          defaultSig = defaultOwnerSetting.value;
-        }
-      }
-
       manifest = await prisma.dailyVanManifest.create({
         data: {
-          manifestNo: generateManifestNo(new Date(), 1),
-          manifestDate: new Date(),
+          manifestNo: generateManifestNo(targetDate, 1),
+          manifestDate: targetDate,
           vehicleId,
           vehicleNumber: vehicle.vehicleNumber,
           driverName: vehicle.driverName,
@@ -352,14 +395,16 @@ export const VanStockService = {
           salesPersonId: vehicle.salesPersonId,
           repName: vehicle.repName,
           repPhone: vehicle.repPhone,
-          ownerSignatureData: defaultSig,
-          ownerSignedBy: defaultSigner,
-          ownerSignedAt: new Date(),
-          status: 'DISPATCHED',
+          ownerSignatureData: null,
+          ownerSignedBy: null,
+          ownerSignedAt: null,
+          status: 'DRAFT',
           manifestRevision: 1,
-          uncheckedCount: 0,
+          uncheckedCount: totalUnits > 0 ? vanItems.length : 0,
           totalUnits,
           totalValue: Math.round(totalValue * 100) / 100,
+          morningCheckedItems: [],
+          eveningCheckedItems: [],
           itemsSnapshot: itemsList as any,
         },
       });
@@ -367,6 +412,8 @@ export const VanStockService = {
 
     return {
       ...manifest,
+      morningCheckedItems: manifest.morningCheckedItems || [],
+      eveningCheckedItems: manifest.eveningCheckedItems || [],
       manifestDate: manifest.manifestDate.toISOString(),
       ownerSignedAt: manifest.ownerSignedAt ? manifest.ownerSignedAt.toISOString() : null,
       repSignedAt: manifest.repSignedAt ? manifest.repSignedAt.toISOString() : null,
@@ -388,6 +435,8 @@ export const VanStockService = {
 
     return manifests.map((m) => ({
       ...m,
+      morningCheckedItems: m.morningCheckedItems || [],
+      eveningCheckedItems: m.eveningCheckedItems || [],
       manifestDate: m.manifestDate.toISOString(),
       ownerSignedAt: m.ownerSignedAt ? m.ownerSignedAt.toISOString() : null,
       repSignedAt: m.repSignedAt ? m.repSignedAt.toISOString() : null,
@@ -399,148 +448,150 @@ export const VanStockService = {
 
   /**
    * Action: Load Stock from Central Warehouse to Van.
+   * Supports both batch items array and single-item loading.
    * Atomically verifies LOC_MAIN has sufficient stock, decrements LOC_MAIN,
    * increments LOC_VAN_01, logs audit movement, and updates today's manifest.
    */
-  async loadToVan(dto: LoadToVanInput, user: AuthenticatedUser) {
-    const prodId = validatePositiveNumber(dto.productId, 'Product ID');
-    const qty = validatePositiveNumber(dto.quantity, 'Load Quantity');
+  async loadToVan(dto: LoadToVanInput, user?: AuthenticatedUser) {
     const vehicleId = dto.vehicleId || 'VAN-01';
+    const rawItems: Array<{ productId: any; quantity: any; notes?: string }> =
+      Array.isArray(dto.items) && dto.items.length > 0
+        ? dto.items
+        : [{ productId: dto.productId, quantity: dto.quantity, notes: dto.notes }];
+
+    if (rawItems.length === 0) {
+      throw new AppError('No items specified for van loading.', 400);
+    }
 
     return await prisma.$transaction(async (tx) => {
       await ensureDefaultLocations(tx);
       const vehicle = await resolveVehicleContext(vehicleId, tx);
+      const username = user?.username || dto.repName || 'Warehouse Dispatcher';
+      const movements = [];
+      let lastVanItem = null;
 
-      const product = await tx.product.findUnique({
-        where: { id: prodId },
-      });
-      if (!product || !product.isActive) {
-        throw new AppError('Product not found in active catalog.', 404);
-      }
+      for (const item of rawItems) {
+        const prodId = validatePositiveNumber(item.productId, 'Product ID');
+        const qty = validatePositiveNumber(item.quantity, 'Load Quantity');
 
-      const warehouseStock = await tx.stockItem.findUnique({
-        where: {
-          locationId_productId: {
-            locationId: 'LOC_MAIN',
-            productId: prodId,
-          },
-        },
-      });
-
-      const currentWarehouseQty = warehouseStock ? warehouseStock.quantity : 0;
-      if (currentWarehouseQty < qty) {
-        throw new AppError(
-          `Insufficient Central Warehouse stock for ${product.name}. Available: ${currentWarehouseQty} ${product.unit}, requested load: ${qty} ${product.unit}.`,
-          400
-        );
-      }
-
-      // 1. Decrement warehouse stock
-      await tx.stockItem.update({
-        where: { id: warehouseStock!.id },
-        data: {
-          quantity: currentWarehouseQty - qty,
-          lastUpdatedBy: user.username,
-        },
-      });
-
-      // 2. Increment van stock
-      let vanItem = await tx.stockItem.findUnique({
-        where: {
-          locationId_productId: {
-            locationId: vehicle.locationId,
-            productId: prodId,
-          },
-        },
-      });
-
-      const prevVanQty = vanItem ? vanItem.quantity : 0;
-      const newVanQty = prevVanQty + qty;
-
-      if (vanItem) {
-        vanItem = await tx.stockItem.update({
-          where: { id: vanItem.id },
-          data: {
-            quantity: newVanQty,
-            status: 'PENDING_CONFIRMATION',
-            repChecked: false,
-            repCheckedAt: null,
-            discrepancyFlag: false,
-            isActive: true,
-            lastUpdatedBy: user.username,
-          },
+        const product = await tx.product.findUnique({
+          where: { id: prodId },
         });
-      } else {
-        vanItem = await tx.stockItem.create({
-          data: {
-            locationId: vehicle.locationId,
-            locationType: 'VEHICLE',
-            vehicleId,
-            productId: prodId,
-            productName: product.name,
-            sku: product.sku,
-            unit: product.unit,
-            quantity: newVanQty,
-            basePrice: product.basePrice,
-            companyDiscountPercent: product.companyDiscountPercent,
-            targetCapacity: product.targetCapacity,
-            status: 'PENDING_CONFIRMATION',
-            repChecked: false,
-            repCheckedAt: null,
-            discrepancyFlag: false,
-            isActive: true,
-            lastUpdatedBy: user.username,
-          },
-        });
-      }
+        if (!product || !product.isActive) {
+          throw new AppError(`Product #${prodId} not found in active catalog.`, 404);
+        }
 
-      const netPrice = calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
-
-      // 3. Update perpetual VanInventory model
-      if (product.sku) {
-        await tx.vanInventory.upsert({
+        const warehouseStock = await tx.stockItem.findUnique({
           where: {
-            vanId_skuId: {
-              vanId: vehicleId,
-              skuId: product.sku,
+            locationId_productId: {
+              locationId: 'LOC_MAIN',
+              productId: prodId,
             },
           },
-          update: {
-            quantity: { increment: Math.round(qty) },
-          },
-          create: {
-            vanId: vehicleId,
-            skuId: product.sku,
-            quantity: Math.round(qty),
+        });
+
+        const currentWarehouseQty = warehouseStock ? warehouseStock.quantity : 0;
+        if (currentWarehouseQty < qty) {
+          throw new AppError(
+            `Insufficient Central Warehouse stock for ${product.name}. Available: ${currentWarehouseQty} ${product.unit}, requested load: ${qty} ${product.unit}.`,
+            400
+          );
+        }
+
+        // 1. Decrement warehouse stock
+        await tx.stockItem.update({
+          where: { id: warehouseStock!.id },
+          data: {
+            quantity: currentWarehouseQty - qty,
+            lastUpdatedBy: username,
           },
         });
-      }
 
-      // 4. Log movement
-      const movement = await tx.stockMovement.create({
-        data: {
-          movementType: 'STORE_TO_VEHICLE_LOAD',
-          sourceLocation: 'LOC_MAIN',
-          targetLocation: vehicle.locationId,
-          productId: prodId,
-          productName: product.name,
-          quantity: qty,
-          unitPrice: netPrice,
-          previousQty: prevVanQty,
-          newQty: newVanQty,
-          reference: `LOAD-${Date.now().toString().slice(-6)}`,
-          performedBy: user.username || dto.repName || 'Warehouse Dispatcher',
-          notes: dto.notes || 'Store-to-Vehicle transfer dispatch',
-        },
-      });
+        // 2. Increment van stock
+        let vanItem = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: vehicle.locationId,
+              productId: prodId,
+            },
+          },
+        });
+
+        const prevVanQty = vanItem ? vanItem.quantity : 0;
+        const newVanQty = prevVanQty + qty;
+
+        if (vanItem) {
+          vanItem = await tx.stockItem.update({
+            where: { id: vanItem.id },
+            data: {
+              quantity: newVanQty,
+              status: 'PENDING_CONFIRMATION',
+              repChecked: false,
+              repCheckedAt: null,
+              discrepancyFlag: false,
+              isActive: true,
+              lastUpdatedBy: username,
+            },
+          });
+        } else {
+          vanItem = await tx.stockItem.create({
+            data: {
+              locationId: vehicle.locationId,
+              locationType: 'VEHICLE',
+              vehicleId,
+              productId: prodId,
+              productName: product.name,
+              sku: product.sku,
+              unit: product.unit,
+              quantity: newVanQty,
+              basePrice: product.basePrice,
+              companyDiscountPercent: product.companyDiscountPercent,
+              targetCapacity: product.targetCapacity,
+              status: 'PENDING_CONFIRMATION',
+              repChecked: false,
+              repCheckedAt: null,
+              discrepancyFlag: false,
+              isActive: true,
+              lastUpdatedBy: username,
+            },
+          });
+        }
+        lastVanItem = vanItem;
+
+        const netPrice = calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
+
+        // 3. Log movement
+        const movement = await tx.stockMovement.create({
+          data: {
+            movementType: 'STORE_TO_VEHICLE_LOAD',
+            sourceLocation: 'LOC_MAIN',
+            targetLocation: vehicle.locationId,
+            productId: prodId,
+            productName: product.name,
+            quantity: qty,
+            unitPrice: netPrice,
+            previousQty: prevVanQty,
+            newQty: newVanQty,
+            reference: `LOAD-${Date.now().toString().slice(-6)}`,
+            performedBy: username,
+            notes: item.notes || dto.notes || 'Store-to-Vehicle transfer dispatch',
+          },
+        });
+
+        movements.push(movement);
+      }
 
       return {
         success: true,
-        vanItem,
-        movement: {
-          ...movement,
-          createdAt: movement.createdAt.toISOString(),
-        },
+        vanItem: lastVanItem,
+        movements: movements.map((m) => ({
+          ...m,
+          createdAt: m.createdAt.toISOString(),
+        })),
+        movement: movements.length > 0 ? {
+          ...movements[0],
+          createdAt: movements[0].createdAt.toISOString(),
+        } : null,
       };
     });
   },
@@ -648,26 +699,6 @@ export const VanStockService = {
         });
       }
 
-      // Sync perpetual VanInventory upon manual quantity modification
-      if (product.sku) {
-        await tx.vanInventory.upsert({
-          where: {
-            vanId_skuId: {
-              vanId: vehicleId,
-              skuId: product.sku,
-            },
-          },
-          update: {
-            quantity: Math.round(targetQty),
-          },
-          create: {
-            vanId: vehicleId,
-            skuId: product.sku,
-            quantity: Math.round(targetQty),
-          },
-        });
-      }
-
       const netPrice = calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
       const movementType = delta > 0 ? 'STORE_TO_VEHICLE_LOAD' : 'VEHICLE_TO_STORE_RETURN';
 
@@ -701,118 +732,111 @@ export const VanStockService = {
     });
   },
 
-  /**
-   * Action: Record Road Sale Outbound from Van.
-   * Deducts quantity directly from active van on-hand stock and logs movement(s).
-   */
-  async recordRoadSale(dto: RecordRoadSaleInput, user: AuthenticatedUser) {
-    if (!dto.items || !Array.isArray(dto.items) || dto.items.length === 0) {
-      throw new AppError('Sale invoice must contain at least one item.', 400);
-    }
-    const vehicleId = dto.vehicleId || 'VAN-01';
+    /**
+     * Action: Record Road Sale Outbound from Van.
+     * Deducts quantity directly from active van on-hand stock and logs movement(s).
+     */
+    async recordRoadSale(dto: RecordRoadSaleInput, user: AuthenticatedUser) {
+  if (!dto.items || !Array.isArray(dto.items) || dto.items.length === 0) {
+    throw new AppError('Sale invoice must contain at least one item.', 400);
+  }
+  const vehicleId = dto.vehicleId || 'VAN-01';
 
-    return await prisma.$transaction(async (tx) => {
-      await ensureDefaultLocations(tx);
-      const vehicle = await resolveVehicleContext(vehicleId, tx);
-      const movements = [];
+  return await prisma.$transaction(async (tx) => {
+    await ensureDefaultLocations(tx);
+    const vehicle = await resolveVehicleContext(vehicleId, tx);
+    const movements = [];
 
-      for (const item of dto.items) {
-        const prodId = validatePositiveNumber(item.productId, 'Product ID');
-        const qty = validatePositiveNumber(item.quantity, 'Sale Quantity');
+    for (const item of dto.items) {
+      const prodId = validatePositiveNumber(item.productId, 'Product ID');
+      const qty = validatePositiveNumber(item.quantity, 'Sale Quantity');
 
-        const vanItem = await tx.stockItem.findUnique({
-          where: {
-            locationId_productId: {
-              locationId: vehicle.locationId,
-              productId: prodId,
-            },
-          },
-          include: { product: true },
-        });
-
-        if (!vanItem || vanItem.quantity < qty) {
-          const available = vanItem ? vanItem.quantity : 0;
-          throw new AppError(
-            `Insufficient van stock for ${item.productName || 'product'}. Available: ${available}, sale quantity: ${qty}.`,
-            400
-          );
-        }
-
-        const prevQty = vanItem.quantity;
-        const newQty = prevQty - qty;
-
-        await tx.stockItem.update({
-          where: { id: vanItem.id },
-          data: {
-            quantity: newQty,
-            lastUpdatedBy: user.username,
-          },
-        });
-
-        // Decrement perpetual VanInventory balance
-        const skuToDecrement = vanItem.sku || vanItem.product?.sku;
-        if (skuToDecrement) {
-          const currentPerpetual = await tx.vanInventory.findUnique({
-            where: {
-              vanId_skuId: {
-                vanId: vehicleId,
-                skuId: skuToDecrement,
-              },
-            },
-          });
-          if (currentPerpetual) {
-            await tx.vanInventory.update({
-              where: { id: currentPerpetual.id },
-              data: {
-                quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
-              },
-            });
-          }
-        }
-
-        const netPrice = item.unitPrice || calcNetUnitPrice(vanItem.basePrice, vanItem.companyDiscountPercent);
-
-        const movement = await tx.stockMovement.create({
-          data: {
-            movementType: 'VEHICLE_SALES_OUTBOUND',
-            sourceLocation: vehicle.locationId,
-            targetLocation: dto.customerName || 'RETAIL_CUSTOMER',
+      const vanItem = await tx.stockItem.findUnique({
+        where: {
+          locationId_productId: {
+            locationId: vehicle.locationId,
             productId: prodId,
-            productName: vanItem.productName,
-            quantity: qty,
-            unitPrice: netPrice,
-            previousQty: prevQty,
-            newQty: newQty,
-            reference: dto.invoiceNo || `INV-${Date.now().toString().slice(-6)}`,
-            performedBy: user.username || dto.performedBy || vehicle.repName,
-            notes: `Road sale invoice to ${dto.customerName || 'Hardware Retailer'}`,
           },
-        });
+        },
+        include: { product: true },
+      });
 
-        movements.push(movement);
+      if (!vanItem || vanItem.quantity < qty) {
+        const available = vanItem ? vanItem.quantity : 0;
+        throw new AppError(
+          `Insufficient van stock for ${item.productName || 'product'}. Available: ${available}, sale quantity: ${qty}.`,
+          400
+        );
       }
 
-      return {
-        success: true,
-        movements: movements.map((m) => ({
-          ...m,
-          createdAt: m.createdAt.toISOString(),
-        })),
-      };
-    });
-  },
+      const prevQty = vanItem.quantity;
+      const newQty = prevQty - qty;
+
+      await tx.stockItem.update({
+        where: { id: vanItem.id },
+        data: {
+          quantity: newQty,
+          lastUpdatedBy: user.username,
+        },
+      });
+
+      const netPrice = item.unitPrice || calcNetUnitPrice(vanItem.basePrice, vanItem.companyDiscountPercent);
+
+      const movement = await tx.stockMovement.create({
+        data: {
+          movementType: 'VEHICLE_SALES_OUTBOUND',
+          sourceLocation: vehicle.locationId,
+          targetLocation: dto.customerName || 'RETAIL_CUSTOMER',
+          productId: prodId,
+          productName: vanItem.productName,
+          quantity: qty,
+          unitPrice: netPrice,
+          previousQty: prevQty,
+          newQty: newQty,
+          reference: dto.invoiceNo || `INV-${Date.now().toString().slice(-6)}`,
+          performedBy: user.username || dto.performedBy || vehicle.repName,
+          notes: `Road sale invoice to ${dto.customerName || 'Hardware Retailer'}`,
+        },
+      });
+
+      movements.push(movement);
+    }
+
+    return {
+      success: true,
+      movements: movements.map((m) => ({
+        ...m,
+        createdAt: m.createdAt.toISOString(),
+      })),
+    };
+  });
+},
 
   /**
    * Action: Return unsold stock from Van back to Central Warehouse.
+   * Supports both multi-item batch payload and single-item return.
    */
-  async returnToWarehouse(dto: ReturnToStoreInput, user: AuthenticatedUser) {
-    const prodId = validatePositiveNumber(dto.productId, 'Product ID');
-    const qty = validatePositiveNumber(dto.quantity, 'Return Quantity');
-    const vehicleId = dto.vehicleId || 'VAN-01';
+  async returnToWarehouse(dto: ReturnToStoreInput, user?: AuthenticatedUser) {
+  const vehicleId = dto.vehicleId || 'VAN-01';
 
-    return await prisma.$transaction(async (tx) => {
-      await ensureDefaultLocations(tx);
-      const vehicle = await resolveVehicleContext(vehicleId, tx);
+  // Normalize items to array (supports both multi-item and legacy single-item)
+  const rawItems: Array<{ productId: any; quantity: any; reason?: string }> =
+    Array.isArray(dto.items) && dto.items.length > 0
+      ? dto.items
+      : [{ productId: dto.productId, quantity: dto.quantity, reason: dto.reason }];
+
+  if (rawItems.length === 0) {
+    throw new AppError('No items specified for return to warehouse.', 400);
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    await ensureDefaultLocations(tx);
+    const vehicle = await resolveVehicleContext(vehicleId, tx);
+    const movements = [];
+
+    for (const item of rawItems) {
+      const prodId = validatePositiveNumber(item.productId, 'Product ID');
+      const qty = validatePositiveNumber(item.quantity, 'Return Quantity');
 
       const vanItem = await tx.stockItem.findUnique({
         where: {
@@ -826,7 +850,7 @@ export const VanStockService = {
       if (!vanItem || vanItem.quantity < qty) {
         const available = vanItem ? vanItem.quantity : 0;
         throw new AppError(
-          `Cannot return more than available on the van. Available: ${available}, return quantity: ${qty}.`,
+          `Cannot return more than available on the van for ${vanItem?.productName || 'product'}. Available: ${available}, return quantity: ${qty}.`,
           400
         );
       }
@@ -839,30 +863,9 @@ export const VanStockService = {
         where: { id: vanItem.id },
         data: {
           quantity: newVanQty,
-          lastUpdatedBy: user.username,
+          lastUpdatedBy: user?.username || 'admin',
         },
       });
-
-      // Decrement perpetual VanInventory balance
-      const skuToReturn = vanItem.sku;
-      if (skuToReturn) {
-        const currentPerpetual = await tx.vanInventory.findUnique({
-          where: {
-            vanId_skuId: {
-              vanId: vehicleId,
-              skuId: skuToReturn,
-            },
-          },
-        });
-        if (currentPerpetual) {
-          await tx.vanInventory.update({
-            where: { id: currentPerpetual.id },
-            data: {
-              quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
-            },
-          });
-        }
-      }
 
       // Increment warehouse
       const warehouseStock = await tx.stockItem.findUnique({
@@ -882,7 +885,7 @@ export const VanStockService = {
           where: { id: warehouseStock.id },
           data: {
             quantity: newWhQty,
-            lastUpdatedBy: user.username,
+            lastUpdatedBy: user?.username || 'admin',
           },
         });
       }
@@ -901,851 +904,493 @@ export const VanStockService = {
           previousQty: prevVanQty,
           newQty: newVanQty,
           reference: `RET-${Date.now().toString().slice(-6)}`,
-          performedBy: user.username || dto.performedBy || vehicle.repName,
-          notes: dto.reason || 'Unsold stock returned to Central Warehouse',
+          performedBy: user?.username || dto.performedBy || vehicle.repName || 'Admin',
+          notes: item.reason || dto.reason || dto.notes || 'Unsold stock returned to Central Warehouse',
         },
       });
 
-      return {
-        success: true,
-        movement: {
-          ...movement,
-          createdAt: movement.createdAt.toISOString(),
-        },
-      };
-    });
-  },
+      movements.push(movement);
+    }
+
+    return {
+      success: true,
+      movements: movements.map((m) => ({
+        ...m,
+        createdAt: m.createdAt.toISOString(),
+      })),
+      movement: movements.length > 0 ? {
+        ...movements[0],
+        createdAt: movements[0].createdAt.toISOString(),
+      } : null,
+    };
+  });
+},
 
   /**
    * Action: Soft Delete Van Stock Item.
    * If quantity > 0, returns remaining units to LOC_MAIN with audit movement before soft-deleting.
    */
   async softDeleteVanStockItem(stockItemId: number, user: AuthenticatedUser) {
-    const id = validatePositiveNumber(stockItemId, 'Stock Item ID');
+  const id = validatePositiveNumber(stockItemId, 'Stock Item ID');
 
-    return await prisma.$transaction(async (tx) => {
-      const item = await tx.stockItem.findUnique({ where: { id } });
-      if (!item || !item.isActive) {
-        throw new AppError('Van stock item not found or already deleted.', 404);
-      }
+  return await prisma.$transaction(async (tx) => {
+    const item = await tx.stockItem.findUnique({ where: { id } });
+    if (!item || !item.isActive) {
+      throw new AppError('Van stock item not found or already deleted.', 404);
+    }
 
-      // If sellable quantity remains on the truck, safely return it to Central Warehouse
-      if (item.quantity > 0) {
-        const whItem = await tx.stockItem.findUnique({
-          where: {
-            locationId_productId: {
-              locationId: 'LOC_MAIN',
-              productId: item.productId,
-            },
-          },
-        });
-
-        if (whItem) {
-          await tx.stockItem.update({
-            where: { id: whItem.id },
-            data: {
-              quantity: whItem.quantity + item.quantity,
-              lastUpdatedBy: user.username,
-            },
-          });
-        }
-
-        const netPrice = calcNetUnitPrice(item.basePrice, item.companyDiscountPercent);
-
-        await tx.stockMovement.create({
-          data: {
-            movementType: 'VEHICLE_TO_STORE_RETURN',
-            sourceLocation: item.locationId,
-            targetLocation: 'LOC_MAIN',
+    // If sellable quantity remains on the truck, safely return it to Central Warehouse
+    if (item.quantity > 0) {
+      const whItem = await tx.stockItem.findUnique({
+        where: {
+          locationId_productId: {
+            locationId: 'LOC_MAIN',
             productId: item.productId,
-            productName: item.productName,
-            quantity: item.quantity,
-            unitPrice: netPrice,
-            previousQty: item.quantity,
-            newQty: 0,
-            reference: `RM-ITEM-${item.id}`,
-            performedBy: user.username,
-            notes: `Auto-reconciled remaining van stock back to Central Warehouse upon line-item removal`,
           },
-        });
-      }
-
-      await tx.stockItem.update({
-        where: { id },
-        data: {
-          quantity: 0,
-          isActive: false,
-          lastUpdatedBy: user.username,
         },
       });
 
-      return { success: true, message: `Van stock item ${item.productName} removed and reconciled.` };
+      if (whItem) {
+        await tx.stockItem.update({
+          where: { id: whItem.id },
+          data: {
+            quantity: whItem.quantity + item.quantity,
+            lastUpdatedBy: user.username,
+          },
+        });
+      }
+
+      const netPrice = calcNetUnitPrice(item.basePrice, item.companyDiscountPercent);
+
+      await tx.stockMovement.create({
+        data: {
+          movementType: 'VEHICLE_TO_STORE_RETURN',
+          sourceLocation: item.locationId,
+          targetLocation: 'LOC_MAIN',
+          productId: item.productId,
+          productName: item.productName,
+          quantity: item.quantity,
+          unitPrice: netPrice,
+          previousQty: item.quantity,
+          newQty: 0,
+          reference: `RM-ITEM-${item.id}`,
+          performedBy: user.username,
+          notes: `Auto-reconciled remaining van stock back to Central Warehouse upon line-item removal`,
+        },
+      });
+    }
+
+    await tx.stockItem.update({
+      where: { id },
+      data: {
+        quantity: 0,
+        isActive: false,
+        lastUpdatedBy: user.username,
+      },
     });
-  },
+
+    return { success: true, message: `Van stock item ${item.productName} removed and reconciled.` };
+  });
+},
 
   /**
    * Action: Log Damaged Goods & Quarantine.
    * Defective items are strictly segregated into LOC_DAMAGED pool and DamagedGoodsRecord.
    */
   async quarantineDamagedGoods(dto: QuarantineDamagedInput, user: AuthenticatedUser) {
-    const prodId = validatePositiveNumber(dto.productId, 'Product ID');
-    const qty = validatePositiveNumber(dto.quantity, 'Damaged Quantity');
-    const reason = validateNonEmptyString(dto.reason, 'Damage Reason');
-    const fromLocation = dto.fromLocation || 'VEHICLE';
+  const prodId = validatePositiveNumber(dto.productId, 'Product ID');
+  const qty = validatePositiveNumber(dto.quantity, 'Damaged Quantity');
+  const reason = dto.reason?.trim() || dto.notes?.trim() || 'Damaged goods transfer';
+  const fromLocation = dto.fromLocation || 'VEHICLE';
 
-    return await prisma.$transaction(async (tx) => {
-      await ensureDefaultLocations(tx);
+  return await prisma.$transaction(async (tx) => {
+    await ensureDefaultLocations(tx);
 
-      const product = await tx.product.findUnique({ where: { id: prodId } });
-      if (!product || !product.isActive) {
-        throw new AppError('Product not found.', 404);
-      }
+    const product = await tx.product.findUnique({ where: { id: prodId } });
+    if (!product || !product.isActive) {
+      throw new AppError('Product not found.', 404);
+    }
 
-      const netPrice = dto.unitPrice || calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
-      const totalLoss = Math.round(netPrice * qty * 100) / 100;
+    const netPrice = dto.unitPrice || calcNetUnitPrice(product.basePrice, product.companyDiscountPercent);
+    const totalLoss = Math.round(netPrice * qty * 100) / 100;
 
-      // 1. Deduct from originating location
-      const originLocId = fromLocation === 'VEHICLE' ? 'LOC_VAN_01' : 'LOC_MAIN';
-      const originStock = await tx.stockItem.findUnique({
-        where: {
-          locationId_productId: {
-            locationId: originLocId,
-            productId: prodId,
-          },
+    // 1. Deduct from originating location
+    const originLocId = fromLocation === 'VEHICLE' ? 'LOC_VAN_01' : 'LOC_MAIN';
+    const originStock = await tx.stockItem.findUnique({
+      where: {
+        locationId_productId: {
+          locationId: originLocId,
+          productId: prodId,
         },
-      });
+      },
+    });
 
-      if (originStock) {
-        if (originStock.quantity < qty) {
-          throw new AppError(
-            `Cannot quarantine more than on-hand stock at ${fromLocation}. Available: ${originStock.quantity}, requested quarantine: ${qty}.`,
-            400
-          );
-        }
-        await tx.stockItem.update({
-          where: { id: originStock.id },
-          data: {
-            quantity: Math.max(0, originStock.quantity - qty),
-            lastUpdatedBy: user.username,
-          },
-        });
-
-        // Decrement perpetual VanInventory if defect is quarantined from van
-        if (fromLocation === 'VEHICLE' && product.sku) {
-          const vehicleId = dto.vehicleId || 'VAN-01';
-          const currentPerpetual = await tx.vanInventory.findUnique({
-            where: {
-              vanId_skuId: {
-                vanId: vehicleId,
-                skuId: product.sku,
-              },
-            },
-          });
-          if (currentPerpetual) {
-            await tx.vanInventory.update({
-              where: { id: currentPerpetual.id },
-              data: {
-                quantity: Math.max(0, currentPerpetual.quantity - Math.round(qty)),
-              },
-            });
-          }
-        }
+    if (originStock) {
+      if (originStock.quantity < qty) {
+        throw new AppError(
+          `Cannot quarantine more than on-hand stock at ${fromLocation}. Available: ${originStock.quantity}, requested quarantine: ${qty}.`,
+          400
+        );
       }
-
-      // 2. Add to Quarantined Pool
-      let damagedStock = await tx.stockItem.findUnique({
-        where: {
-          locationId_productId: {
-            locationId: 'LOC_DAMAGED',
-            productId: prodId,
-          },
-        },
-      });
-
-      if (damagedStock) {
-        await tx.stockItem.update({
-          where: { id: damagedStock.id },
-          data: {
-            quantity: damagedStock.quantity + qty,
-            isActive: true,
-            lastUpdatedBy: user.username,
-          },
-        });
-      } else {
-        await tx.stockItem.create({
-          data: {
-            locationId: 'LOC_DAMAGED',
-            locationType: 'DAMAGED_GOODS',
-            vehicleId: null,
-            productId: prodId,
-            productName: product.name,
-            sku: product.sku,
-            unit: product.unit,
-            quantity: qty,
-            basePrice: product.basePrice,
-            companyDiscountPercent: product.companyDiscountPercent,
-            targetCapacity: 0,
-            status: 'APPROVED',
-            isActive: true,
-            lastUpdatedBy: user.username,
-          },
-        });
-      }
-
-      const assignedManifest = dto.manifestNo || dto.sourceManifestNo || null;
-      const parsedLoadDate = dto.loadDate ? new Date(dto.loadDate) : null;
-
-      // 3. Create DamagedGoodsRecord
-      const record = await tx.damagedGoodsRecord.create({
+      await tx.stockItem.update({
+        where: { id: originStock.id },
         data: {
-          vehicleId: fromLocation === 'VEHICLE' ? 'VAN-01' : 'MAIN_STORE',
+          quantity: Math.max(0, originStock.quantity - qty),
+          lastUpdatedBy: user.username,
+        },
+      });
+    }
+
+    // 2. Add to Quarantined Pool
+    let damagedStock = await tx.stockItem.findUnique({
+      where: {
+        locationId_productId: {
+          locationId: 'LOC_DAMAGED',
+          productId: prodId,
+        },
+      },
+    });
+
+    if (damagedStock) {
+      await tx.stockItem.update({
+        where: { id: damagedStock.id },
+        data: {
+          quantity: damagedStock.quantity + qty,
+          isActive: true,
+          lastUpdatedBy: user.username,
+        },
+      });
+    } else {
+      await tx.stockItem.create({
+        data: {
+          locationId: 'LOC_DAMAGED',
+          locationType: 'DAMAGED_GOODS',
+          vehicleId: null,
           productId: prodId,
           productName: product.name,
           sku: product.sku,
           unit: product.unit,
           quantity: qty,
-          unitPrice: netPrice,
-          totalValue: totalLoss,
-          reason,
-          sourceInvoiceNo: dto.sourceInvoiceNo || null,
-          manifestNo: assignedManifest || '',
-          loadDate: parsedLoadDate,
-          reportedBy: user.username || dto.reportedBy || 'Kamal Perera',
-          status: 'LOGGED',
+          basePrice: product.basePrice,
+          companyDiscountPercent: product.companyDiscountPercent,
+          targetCapacity: 0,
+          status: 'APPROVED',
           isActive: true,
+          lastUpdatedBy: user.username,
         },
       });
+    }
 
-      // 4. Log Movement
-      const movement = await tx.stockMovement.create({
-        data: {
-          movementType: 'RETURN_TO_DAMAGED_POOL',
-          sourceLocation: originLocId,
-          targetLocation: 'LOC_DAMAGED',
-          productId: prodId,
-          productName: product.name,
-          quantity: qty,
-          unitPrice: netPrice,
-          previousQty: originStock ? originStock.quantity : 0,
-          newQty: originStock ? Math.max(0, originStock.quantity - qty) : 0,
-          reference: assignedManifest || dto.sourceInvoiceNo || `DMG-${Date.now().toString().slice(-6)}`,
-          manifestNo: assignedManifest || '',
-          performedBy: user.username || dto.reportedBy || 'Kamal Perera',
-          notes: reason,
-        },
-      });
+    const assignedManifest = dto.manifestNo || dto.sourceManifestNo || null;
+    const parsedLoadDate = dto.loadDate ? new Date(dto.loadDate) : null;
 
-      return {
-        success: true,
-        record: {
-          ...record,
-          manifestNo: record.manifestNo || assignedManifest || null,
-          sourceManifestNo: record.manifestNo || assignedManifest || null,
-          loadDate: record.loadDate ? record.loadDate.toISOString() : null,
-          createdAt: record.createdAt.toISOString(),
-          updatedAt: record.updatedAt.toISOString(),
-        },
-        movement: {
-          ...movement,
-          timestamp: movement.createdAt.toISOString(),
-          createdAt: movement.createdAt.toISOString(),
-        },
-      };
+    // 3. Create DamagedGoodsRecord
+    const record = await tx.damagedGoodsRecord.create({
+      data: {
+        vehicleId: fromLocation === 'VEHICLE' ? 'VAN-01' : 'MAIN_STORE',
+        productId: prodId,
+        productName: product.name,
+        sku: product.sku,
+        unit: product.unit,
+        quantity: qty,
+        unitPrice: netPrice,
+        totalValue: totalLoss,
+        reason,
+        sourceInvoiceNo: dto.sourceInvoiceNo || null,
+        manifestNo: assignedManifest || '',
+        loadDate: parsedLoadDate,
+        reportedBy: user.username || dto.reportedBy || 'Kamal Perera',
+        status: 'LOGGED',
+        isActive: true,
+      },
     });
-  },
+
+    // 4. Log Movement
+    const movement = await tx.stockMovement.create({
+      data: {
+        movementType: 'RETURN_TO_DAMAGED_POOL',
+        sourceLocation: originLocId,
+        targetLocation: 'LOC_DAMAGED',
+        productId: prodId,
+        productName: product.name,
+        quantity: qty,
+        unitPrice: netPrice,
+        previousQty: originStock ? originStock.quantity : 0,
+        newQty: originStock ? Math.max(0, originStock.quantity - qty) : 0,
+        reference: assignedManifest || dto.sourceInvoiceNo || `DMG-${Date.now().toString().slice(-6)}`,
+        manifestNo: assignedManifest || '',
+        performedBy: user.username || dto.reportedBy || 'Kamal Perera',
+        notes: reason,
+      },
+    });
+
+    return {
+      success: true,
+      record: {
+        ...record,
+        manifestNo: record.manifestNo || assignedManifest || null,
+        sourceManifestNo: record.manifestNo || assignedManifest || null,
+        loadDate: record.loadDate ? record.loadDate.toISOString() : null,
+        createdAt: record.createdAt.toISOString(),
+        updatedAt: record.updatedAt.toISOString(),
+      },
+      movement: {
+        ...movement,
+        timestamp: movement.createdAt.toISOString(),
+        createdAt: movement.createdAt.toISOString(),
+      },
+    };
+  });
+},
 
   /**
    * Retrieves quarantined damaged goods list and KPIs.
    */
   async getDamagedGoodsList(filters: DamagedGoodsQueryParams = {}) {
-    const whereClause: any = { isActive: true };
+  const whereClause: any = { isActive: true };
 
-    if (filters.status && (filters.status as string) !== 'ALL') {
-      whereClause.status = filters.status;
-    }
-    if (filters.vehicleId) {
-      whereClause.vehicleId = filters.vehicleId;
-    }
-    if (filters.search && filters.search.trim()) {
-      const q = filters.search.trim();
-      whereClause.OR = [
-        { productName: { contains: q } },
-        { sku: { contains: q } },
-        { reason: { contains: q } },
-      ];
-    }
+  if (filters.status && (filters.status as string) !== 'ALL') {
+    whereClause.status = filters.status;
+  }
+  if (filters.vehicleId) {
+    whereClause.vehicleId = filters.vehicleId;
+  }
+  if (filters.search && filters.search.trim()) {
+    const q = filters.search.trim();
+    whereClause.OR = [
+      { productName: { contains: q } },
+      { sku: { contains: q } },
+      { reason: { contains: q } },
+    ];
+  }
 
-    const records = await prisma.damagedGoodsRecord.findMany({
-      where: whereClause,
-      orderBy: { createdAt: 'desc' },
-    });
+  const records = await prisma.damagedGoodsRecord.findMany({
+    where: whereClause,
+    orderBy: { createdAt: 'desc' },
+  });
 
-    let totalLossValue = 0;
-    let totalDamagedUnits = 0;
+  let totalLossValue = 0;
+  let totalDamagedUnits = 0;
 
-    const list = records.map((r) => {
-      totalLossValue += r.totalValue;
-      totalDamagedUnits += r.quantity;
-      return {
-        ...r,
-        manifestNo: r.manifestNo || null,
-        sourceManifestNo: r.manifestNo || null,
-        loadDate: r.loadDate ? r.loadDate.toISOString() : null,
-        createdAt: r.createdAt.toISOString(),
-        updatedAt: r.updatedAt.toISOString(),
-      };
-    });
-
+  const list = records.map((r) => {
+    totalLossValue += r.totalValue;
+    totalDamagedUnits += r.quantity;
     return {
-      records: list,
-      kpis: {
-        totalValue: Math.round(totalLossValue * 100) / 100,
-        totalUnits: totalDamagedUnits,
-        recordCount: records.length,
-      },
+      ...r,
+      manifestNo: r.manifestNo || null,
+      sourceManifestNo: r.manifestNo || null,
+      loadDate: r.loadDate ? r.loadDate.toISOString() : null,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
     };
-  },
+  });
+
+  return {
+    records: list,
+    kpis: {
+      totalValue: Math.round(totalLossValue * 100) / 100,
+      totalUnits: totalDamagedUnits,
+      recordCount: records.length,
+    },
+  };
+},
 
   /**
    * Updates status of a quarantined damaged goods record (INSPECTED, WRITTEN_OFF, VENDOR_RETURN).
    */
-  async updateDamagedStatus(id: number, dto: UpdateDamagedStatusInput, user?: AuthenticatedUser) {
-    const recordId = validatePositiveNumber(id, 'Damaged Record ID');
-    if (recordId > 2147483647) {
-      throw new AppError('Damaged Record ID exceeds maximum 32-bit integer range.', 400);
+  async updateDamagedStatus(id: number, dto: UpdateDamagedStatusInput, user ?: AuthenticatedUser) {
+  const recordId = validatePositiveNumber(id, 'Damaged Record ID');
+  if (recordId > 2147483647) {
+    throw new AppError('Damaged Record ID exceeds maximum 32-bit integer range.', 400);
+  }
+  const newStatus = dto.status || (dto as any).newStatus;
+  const validStatuses = ['LOGGED', 'INSPECTED', 'WRITTEN_OFF', 'VENDOR_RETURN'];
+  if (!newStatus || !validStatuses.includes(newStatus)) {
+    throw new AppError(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400);
+  }
+
+  const performedBy = user?.username || (dto as any).reportedBy || 'Warehouse Manager';
+
+  return await prisma.$transaction(async (tx) => {
+    const record = await tx.damagedGoodsRecord.findUnique({ where: { id: recordId } });
+    if (!record || !record.isActive) {
+      throw new AppError('Damaged goods record not found.', 404);
     }
-    const newStatus = dto.status || (dto as any).newStatus;
-    const validStatuses = ['LOGGED', 'INSPECTED', 'WRITTEN_OFF', 'VENDOR_RETURN'];
-    if (!newStatus || !validStatuses.includes(newStatus)) {
-      throw new AppError(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400);
-    }
 
-    const performedBy = user?.username || (dto as any).reportedBy || 'Warehouse Manager';
-
-    return await prisma.$transaction(async (tx) => {
-      const record = await tx.damagedGoodsRecord.findUnique({ where: { id: recordId } });
-      if (!record || !record.isActive) {
-        throw new AppError('Damaged goods record not found.', 404);
-      }
-
-      // Update the damaged goods record with the new status
-      const updated = await tx.damagedGoodsRecord.update({
-        where: { id: recordId },
-        data: {
-          status: newStatus,
-          resolutionNotes: dto.resolutionNotes || record.resolutionNotes,
-        },
-      });
-
-      let movement = null;
-      if (newStatus === 'WRITTEN_OFF') {
-        // Adjust quarantined stock item in LOC_DAMAGED if present
-        try {
-          const damagedStock = await tx.stockItem.findUnique({
-            where: {
-              locationId_productId: {
-                locationId: 'LOC_DAMAGED',
-                productId: record.productId,
-              },
-            },
-          });
-          if (damagedStock) {
-            await tx.stockItem.update({
-              where: { id: damagedStock.id },
-              data: {
-                quantity: Math.max(0, damagedStock.quantity - record.quantity),
-                lastUpdatedBy: performedBy,
-              },
-            });
-          }
-        } catch (stockErr) {
-          console.warn('[updateDamagedStatus] Warning adjusting LOC_DAMAGED stock item:', stockErr);
-        }
-
-        try {
-          movement = await tx.stockMovement.create({
-            data: {
-              movementType: 'DAMAGED_WRITE_OFF',
-              sourceLocation: 'LOC_DAMAGED',
-              targetLocation: 'SCRAP_DISPOSAL',
-              productId: record.productId,
-              productName: record.productName,
-              quantity: record.quantity,
-              unitPrice: record.unitPrice,
-              previousQty: record.quantity,
-              newQty: 0,
-              reference: `WO-${record.id}`,
-              manifestNo: record.manifestNo || '',
-              performedBy,
-              notes: dto.resolutionNotes || 'Approved for scrap write-off',
-            },
-          });
-        } catch (movErr) {
-          console.warn('[updateDamagedStatus] Warning creating write-off movement:', movErr);
-        }
-      } else if (newStatus === 'VENDOR_RETURN') {
-        try {
-          const damagedStock = await tx.stockItem.findUnique({
-            where: {
-              locationId_productId: {
-                locationId: 'LOC_DAMAGED',
-                productId: record.productId,
-              },
-            },
-          });
-          if (damagedStock) {
-            await tx.stockItem.update({
-              where: { id: damagedStock.id },
-              data: {
-                quantity: Math.max(0, damagedStock.quantity - record.quantity),
-                lastUpdatedBy: performedBy,
-              },
-            });
-          }
-        } catch (stockErr) {
-          console.warn('[updateDamagedStatus] Warning adjusting LOC_DAMAGED stock item:', stockErr);
-        }
-
-        try {
-          movement = await tx.stockMovement.create({
-            data: {
-              movementType: 'DAMAGED_VENDOR_RETURN',
-              sourceLocation: 'LOC_DAMAGED',
-              targetLocation: 'SUPPLIER_WARRANTY',
-              productId: record.productId,
-              productName: record.productName,
-              quantity: record.quantity,
-              unitPrice: record.unitPrice,
-              previousQty: record.quantity,
-              newQty: 0,
-              reference: `VR-${record.id}`,
-              manifestNo: record.manifestNo || '',
-              performedBy,
-              notes: dto.resolutionNotes || 'Returned to supplier for warranty replacement',
-            },
-          });
-        } catch (movErr) {
-          console.warn('[updateDamagedStatus] Warning creating vendor return movement:', movErr);
-        }
-      }
-
-      return {
-        success: true,
-        record: {
-          ...updated,
-          createdAt: updated.createdAt.toISOString(),
-          updatedAt: updated.updatedAt.toISOString(),
-        },
-        movement: movement
-          ? {
-              ...movement,
-              createdAt: movement.createdAt.toISOString(),
-            }
-          : null,
-      };
+    // Update the damaged goods record with the new status
+    const updated = await tx.damagedGoodsRecord.update({
+      where: { id: recordId },
+      data: {
+        status: newStatus,
+        resolutionNotes: dto.resolutionNotes || record.resolutionNotes,
+      },
     });
-  },
+
+    let movement = null;
+    if (newStatus === 'WRITTEN_OFF') {
+      // Adjust quarantined stock item in LOC_DAMAGED if present
+      try {
+        const damagedStock = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_DAMAGED',
+              productId: record.productId,
+            },
+          },
+        });
+        if (damagedStock) {
+          await tx.stockItem.update({
+            where: { id: damagedStock.id },
+            data: {
+              quantity: Math.max(0, damagedStock.quantity - record.quantity),
+              lastUpdatedBy: performedBy,
+            },
+          });
+        }
+      } catch (stockErr) {
+        console.warn('[updateDamagedStatus] Warning adjusting LOC_DAMAGED stock item:', stockErr);
+      }
+
+      try {
+        movement = await tx.stockMovement.create({
+          data: {
+            movementType: 'DAMAGED_WRITE_OFF',
+            sourceLocation: 'LOC_DAMAGED',
+            targetLocation: 'SCRAP_DISPOSAL',
+            productId: record.productId,
+            productName: record.productName,
+            quantity: record.quantity,
+            unitPrice: record.unitPrice,
+            previousQty: record.quantity,
+            newQty: 0,
+            reference: `WO-${record.id}`,
+            manifestNo: record.manifestNo || '',
+            performedBy,
+            notes: dto.resolutionNotes || 'Approved for scrap write-off',
+          },
+        });
+      } catch (movErr) {
+        console.warn('[updateDamagedStatus] Warning creating write-off movement:', movErr);
+      }
+    } else if (newStatus === 'VENDOR_RETURN') {
+      try {
+        const damagedStock = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_DAMAGED',
+              productId: record.productId,
+            },
+          },
+        });
+        if (damagedStock) {
+          await tx.stockItem.update({
+            where: { id: damagedStock.id },
+            data: {
+              quantity: Math.max(0, damagedStock.quantity - record.quantity),
+              lastUpdatedBy: performedBy,
+            },
+          });
+        }
+      } catch (stockErr) {
+        console.warn('[updateDamagedStatus] Warning adjusting LOC_DAMAGED stock item:', stockErr);
+      }
+
+      try {
+        movement = await tx.stockMovement.create({
+          data: {
+            movementType: 'DAMAGED_VENDOR_RETURN',
+            sourceLocation: 'LOC_DAMAGED',
+            targetLocation: 'SUPPLIER_WARRANTY',
+            productId: record.productId,
+            productName: record.productName,
+            quantity: record.quantity,
+            unitPrice: record.unitPrice,
+            previousQty: record.quantity,
+            newQty: 0,
+            reference: `VR-${record.id}`,
+            manifestNo: record.manifestNo || '',
+            performedBy,
+            notes: dto.resolutionNotes || 'Returned to supplier for warranty replacement',
+          },
+        });
+      } catch (movErr) {
+        console.warn('[updateDamagedStatus] Warning creating vendor return movement:', movErr);
+      }
+    }
+
+    return {
+      success: true,
+      record: {
+        ...updated,
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+      },
+      movement: movement
+        ? {
+          ...movement,
+          createdAt: movement.createdAt.toISOString(),
+        }
+        : null,
+    };
+  });
+},
 
   /**
    * Soft delete damaged goods record.
    */
   async softDeleteDamagedRecord(id: number, user: AuthenticatedUser) {
-    const recordId = validatePositiveNumber(id, 'Damaged Record ID');
+  const recordId = validatePositiveNumber(id, 'Damaged Record ID');
 
-    const record = await prisma.damagedGoodsRecord.findUnique({ where: { id: recordId } });
-    if (!record || !record.isActive) {
-      throw new AppError('Damaged goods record not found or already deleted.', 404);
-    }
+  const record = await prisma.damagedGoodsRecord.findUnique({ where: { id: recordId } });
+  if (!record || !record.isActive) {
+    throw new AppError('Damaged goods record not found or already deleted.', 404);
+  }
 
-    await prisma.damagedGoodsRecord.update({
-      where: { id: recordId },
-      data: { isActive: false },
-    });
+  await prisma.damagedGoodsRecord.update({
+    where: { id: recordId },
+    data: { isActive: false },
+  });
 
-    return { success: true, message: `Damaged record #${recordId} soft-deleted successfully.` };
-  },
+  return { success: true, message: `Damaged record #${recordId} soft-deleted successfully.` };
+},
 
   /**
    * Stamped with Owner signature and dispatches / re-dispatches Daily Manifest.
    */
   async signManifestByOwner(manifestId: string | undefined, dto: SignManifestByOwnerInput, user: AuthenticatedUser) {
-    const signatureData = dto.signatureData ? validateSignatureDataUrl(dto.signatureData, 'Owner Signature') : null;
-    const signer = dto.dispatcherName || 'W. Liyanage (Managing Director / Owner)';
-    const vehicleId = 'VAN-01';
+  const signatureData = dto.signatureData ? validateSignatureDataUrl(dto.signatureData, 'Owner Signature') : null;
+  const signer = dto.dispatcherName || 'W. Liyanage (Managing Director / Owner)';
+  const vehicleId = 'VAN-01';
 
-    return await prisma.$transaction(async (tx) => {
-      const vehicle = await resolveVehicleContext(vehicleId, tx);
+  return await prisma.$transaction(async (tx) => {
+    const vehicle = await resolveVehicleContext(vehicleId, tx);
 
-      let targetManifest = manifestId
-        ? await tx.dailyVanManifest.findUnique({ where: { id: manifestId } })
-        : await tx.dailyVanManifest.findFirst({
-            where: { vehicleId },
-            orderBy: { createdAt: 'desc' },
-          });
-
-      const nextRev = targetManifest ? targetManifest.manifestRevision + 1 : 1;
-      const manifestNo = targetManifest ? generateManifestNo(new Date(), nextRev) : generateManifestNo(new Date(), 1);
-
-      // Snapshot active van items
-      const vanItems = await tx.stockItem.findMany({
-        where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
-        include: { product: true },
-        orderBy: { productName: 'asc' },
+    let targetManifest = manifestId
+      ? await tx.dailyVanManifest.findUnique({ where: { id: manifestId } })
+      : await tx.dailyVanManifest.findFirst({
+        where: { vehicleId },
+        orderBy: { createdAt: 'desc' },
       });
 
-      let totalUnits = 0;
-      let totalValue = 0;
-      const itemsList = vanItems.map((v) => {
-        const net = calcNetUnitPrice(v.basePrice, v.companyDiscountPercent);
-        const val = Math.round(net * v.quantity * 100) / 100;
-        totalUnits += v.quantity;
-        totalValue += val;
-        return {
-          id: v.id,
-          productId: v.productId,
-          productName: v.productName,
-          sku: v.sku || v.product?.sku || '',
-          unit: v.unit || v.product?.unit || 'Unit',
-          quantity: v.quantity,
-          basePrice: v.basePrice,
-          discountPercent: v.companyDiscountPercent,
-          netUnitPrice: net,
-          totalValue: val,
-          repChecked: v.repChecked,
-          repCheckedAt: v.repCheckedAt ? v.repCheckedAt.toISOString() : null,
-          discrepancyFlag: v.discrepancyFlag,
-          status: v.status,
-        };
-      });
+    const targetDate = targetManifest?.manifestDate || new Date();
+    const nextRev = targetManifest ? targetManifest.manifestRevision + 1 : 1;
+    const manifestNo = targetManifest ? generateManifestNo(targetDate, nextRev) : generateManifestNo(targetDate, 1);
 
-      // Revision preservation: if existing revision already dispatched, branch to a new revision record
-      const existingWithNo = await tx.dailyVanManifest.findUnique({ where: { manifestNo } });
-      let updated;
+    // Snapshot active van items
+    const vanItems = await tx.stockItem.findMany({
+      where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
+      include: { product: true },
+      orderBy: { productName: 'asc' },
+    });
 
-      if (existingWithNo) {
-        updated = await tx.dailyVanManifest.update({
-          where: { id: existingWithNo.id },
-          data: {
-            manifestRevision: nextRev,
-            ownerSignatureData: signatureData || existingWithNo.ownerSignatureData,
-            ownerSignedBy: signer,
-            ownerSignedAt: new Date(),
-            status: 'DISPATCHED',
-            itemsSnapshot: itemsList as any,
-            totalUnits,
-            totalValue: Math.round(totalValue * 100) / 100,
-            repSignatureData: null,
-            repSignedBy: null,
-            repSignedAt: null,
-            uncheckedCount: 0,
-          },
-        });
-      } else if (targetManifest && targetManifest.status !== 'DRAFT') {
-        updated = await tx.dailyVanManifest.create({
-          data: {
-            manifestNo,
-            manifestRevision: nextRev,
-            vehicleId,
-            vehicleNumber: vehicle.vehicleNumber,
-            driverName: vehicle.driverName,
-            routeId: vehicle.routeId,
-            routeName: vehicle.routeName,
-            salesPersonId: vehicle.salesPersonId,
-            repName: vehicle.repName,
-            repPhone: vehicle.repPhone,
-            ownerSignatureData: signatureData || targetManifest.ownerSignatureData,
-            ownerSignedBy: signer,
-            ownerSignedAt: new Date(),
-            status: 'DISPATCHED',
-            itemsSnapshot: itemsList as any,
-            totalUnits,
-            totalValue: Math.round(totalValue * 100) / 100,
-            repSignatureData: null,
-            repSignedBy: null,
-            repSignedAt: null,
-            uncheckedCount: 0,
-          },
-        });
-      } else {
-        updated = await tx.dailyVanManifest.upsert({
-          where: { id: targetManifest?.id || 'new-uuid-placeholder' },
-          update: {
-            manifestNo,
-            manifestRevision: nextRev,
-            ownerSignatureData: signatureData || targetManifest?.ownerSignatureData,
-            ownerSignedBy: signer,
-            ownerSignedAt: new Date(),
-            status: 'DISPATCHED',
-            itemsSnapshot: itemsList as any,
-            totalUnits,
-            totalValue: Math.round(totalValue * 100) / 100,
-            repSignatureData: null,
-            repSignedBy: null,
-            repSignedAt: null,
-            uncheckedCount: 0,
-          },
-          create: {
-            manifestNo,
-            manifestRevision: 1,
-            vehicleId,
-            vehicleNumber: vehicle.vehicleNumber,
-            driverName: vehicle.driverName,
-            routeId: vehicle.routeId,
-            routeName: vehicle.routeName,
-            salesPersonId: vehicle.salesPersonId,
-            repName: vehicle.repName,
-            repPhone: vehicle.repPhone,
-            ownerSignatureData: signatureData,
-            ownerSignedBy: signer,
-            ownerSignedAt: new Date(),
-            status: 'DISPATCHED',
-            itemsSnapshot: itemsList as any,
-            totalUnits,
-            totalValue: Math.round(totalValue * 100) / 100,
-          },
-        });
-      }
-
+    let totalUnits = 0;
+    let totalValue = 0;
+    const itemsList = vanItems.map((v) => {
+      const net = calcNetUnitPrice(v.basePrice, v.companyDiscountPercent);
+      const val = Math.round(net * v.quantity * 100) / 100;
+      totalUnits += v.quantity;
+      totalValue += val;
       return {
-        success: true,
-        manifest: {
-          ...updated,
-          manifestDate: updated.manifestDate.toISOString(),
-          ownerSignedAt: updated.ownerSignedAt ? updated.ownerSignedAt.toISOString() : null,
-          repSignedAt: updated.repSignedAt ? updated.repSignedAt.toISOString() : null,
-          createdAt: updated.createdAt.toISOString(),
-          updatedAt: updated.updatedAt.toISOString(),
-          items: itemsList,
-        },
-      };
-    });
-  },
-
-  /**
-   * Verifies manifest with sales representative digital signature.
-   * Evaluates checked items vs unchecked items to determine REP_ACCEPTED or PARTIAL_DISCREPANCY.
-   * Allows active item updates for DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
-   * Only blocks if manifest is strictly ARCHIVED, COMPLETED, or RETURNED.
-   */
-  async verifyManifestByRep(manifestNo: string, dto: VerifyManifestByRepInput) {
-    const code = validateNonEmptyString(manifestNo, 'Manifest Number');
-    const rawSignature = dto.repSignature || dto.signatureData || dto.signature;
-    const repName = dto.repName?.trim() || 'Kamal Perera';
-
-    return await prisma.$transaction(async (tx) => {
-      const manifest = await tx.dailyVanManifest.findUnique({
-        where: { manifestNo: code },
-      });
-      if (!manifest) {
-        throw new AppError(`Manifest "${code}" not found.`, 404);
-      }
-
-      // Relaxed Status Check: Allow active updates if manifest is DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
-      // Only block the update if the status is strictly ARCHIVED, COMPLETED, or RETURNED.
-      const currentStatus = (manifest.status || '').toUpperCase();
-      const blockedStatuses = ['ARCHIVED', 'COMPLETED', 'RETURNED'];
-      if (blockedStatuses.includes(currentStatus)) {
-        throw new AppError('This manifest is archived or already closed.', 400);
-      }
-
-      const effectiveSig = rawSignature || manifest.repSignatureData;
-      if (!effectiveSig) {
-        throw new AppError('Representative Signature is required.', 400);
-      }
-      const signatureData = validateSignatureDataUrl(effectiveSig, 'Representative Signature');
-
-      const vehicle = await resolveVehicleContext(manifest.vehicleId, tx);
-
-      // Active van items
-      const vanItems = await tx.stockItem.findMany({
-        where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
-        include: { product: true },
-      });
-
-      const checkedItemMap = new Map<number, boolean>();
-      if (dto.items && Array.isArray(dto.items)) {
-        dto.items.forEach((i) => checkedItemMap.set(i.itemId, Boolean(i.repChecked)));
-      } else {
-        // If not itemized in dto, mark all active items as checked (repChecked = true)
-        vanItems.forEach((i) => checkedItemMap.set(i.id, true));
-      }
-
-      let uncheckedCount = 0;
-      const now = new Date();
-
-      for (const item of vanItems) {
-        const isChecked = checkedItemMap.has(item.id) ? checkedItemMap.get(item.id)! : item.repChecked;
-        if (isChecked) {
-          await tx.stockItem.update({
-            where: { id: item.id },
-            data: {
-              status: 'APPROVED',
-              repChecked: true,
-              repCheckedAt: item.repCheckedAt || now,
-              discrepancyFlag: false,
-              confirmedBy: repName,
-              confirmedAt: now,
-            },
-          });
-        } else {
-          uncheckedCount += 1;
-          await tx.stockItem.update({
-            where: { id: item.id },
-            data: {
-              status: 'PENDING_CONFIRMATION',
-              repChecked: false,
-              repCheckedAt: null,
-              discrepancyFlag: true,
-              confirmedBy: null,
-              confirmedAt: null,
-            },
-          });
-        }
-      }
-
-      // Set status = "REP_ACCEPTED" upon full verification or PARTIAL_DISCREPANCY if items are unchecked
-      const finalStatus = uncheckedCount === 0 ? 'REP_ACCEPTED' : 'PARTIAL_DISCREPANCY';
-
-      // Re-snapshot van items
-      const updatedVanItems = await tx.stockItem.findMany({
-        where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
-        include: { product: true },
-      });
-
-      const itemsList = updatedVanItems.map((v) => {
-        const net = calcNetUnitPrice(v.basePrice, v.companyDiscountPercent);
-        const val = Math.round(net * v.quantity * 100) / 100;
-        return {
-          id: v.id,
-          productId: v.productId,
-          productName: v.productName,
-          sku: v.sku || v.product?.sku || '',
-          unit: v.unit || v.product?.unit || 'Unit',
-          quantity: v.quantity,
-          basePrice: v.basePrice,
-          discountPercent: v.companyDiscountPercent,
-          netUnitPrice: net,
-          totalValue: val,
-          repChecked: v.repChecked,
-          repCheckedAt: v.repCheckedAt ? v.repCheckedAt.toISOString() : null,
-          discrepancyFlag: v.discrepancyFlag,
-          status: v.status,
-        };
-      });
-
-      const updatedManifest = await tx.dailyVanManifest.update({
-        where: { id: manifest.id },
-        data: {
-          repSignatureData: signatureData,
-          repSignedBy: repName,
-          repSignedAt: now,
-          status: finalStatus,
-          uncheckedCount,
-          itemsSnapshot: itemsList as any,
-        },
-      });
-
-      // Increment perpetual VanInventory for accepted manifest items
-      if (finalStatus === 'REP_ACCEPTED') {
-        for (const item of updatedVanItems) {
-          if (item.repChecked && item.quantity > 0) {
-            const sku = item.sku || item.product?.sku;
-            if (sku) {
-              await tx.vanInventory.upsert({
-                where: {
-                  vanId_skuId: {
-                    vanId: manifest.vehicleId || 'VAN-01',
-                    skuId: sku,
-                  },
-                },
-                update: {
-                  quantity: { increment: Math.round(item.quantity) },
-                },
-                create: {
-                  vanId: manifest.vehicleId || 'VAN-01',
-                  skuId: sku,
-                  quantity: Math.round(item.quantity),
-                },
-              });
-            }
-          }
-        }
-      }
-
-      return {
-        success: true,
-        isFullVerification: uncheckedCount === 0,
-        uncheckedCount,
-        manifest: {
-          ...updatedManifest,
-          repSignature: updatedManifest.repSignatureData,
-          manifestDate: updatedManifest.manifestDate.toISOString(),
-          ownerSignedAt: updatedManifest.ownerSignedAt ? updatedManifest.ownerSignedAt.toISOString() : null,
-          repSignedAt: updatedManifest.repSignedAt ? updatedManifest.repSignedAt.toISOString() : null,
-          createdAt: updatedManifest.createdAt.toISOString(),
-          updatedAt: updatedManifest.updatedAt.toISOString(),
-          items: itemsList,
-        },
-      };
-    });
-  },
-
-  /**
-   * Public Share View Manifest Lookup (Zero Login WhatsApp Link).
-   * Exposes ONLY non-sensitive manifest data and item list.
-   */
-  async getPublicManifestShare(manifestNo: string) {
-    const code = validateNonEmptyString(manifestNo, 'Manifest Code');
-
-    const manifest = await prisma.dailyVanManifest.findUnique({
-      where: { manifestNo: code },
-    });
-
-    if (!manifest) {
-      throw new AppError(`Manifest "${code}" not found.`, 404);
-    }
-
-    const vehicle = await resolveVehicleContext(manifest.vehicleId, prisma);
-
-    // Active Manifest Resolution: evaluate newest revision for this van on this manifest date
-    const dayStart = new Date(manifest.manifestDate);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(manifest.manifestDate);
-    dayEnd.setHours(23, 59, 59, 999);
-
-    const latestManifest = await prisma.dailyVanManifest.findFirst({
-      where: {
-        vehicleId: manifest.vehicleId,
-        manifestDate: {
-          gte: dayStart,
-          lte: dayEnd,
-        },
-      },
-      orderBy: [
-        { manifestRevision: 'desc' },
-        { createdAt: 'desc' },
-      ],
-    });
-
-    const isLatestRevision =
-      !latestManifest ||
-      latestManifest.id === manifest.id ||
-      latestManifest.manifestNo === manifest.manifestNo ||
-      latestManifest.manifestRevision <= manifest.manifestRevision;
-
-    const statusUpper = (manifest.status || '').toUpperCase();
-    const requiresRepSignature =
-      statusUpper === 'DISPATCHED' || statusUpper === 'PENDING' || !manifest.repSignatureData;
-    const isActive = isLatestRevision && (requiresRepSignature || statusUpper === 'FULLY_VERIFIED' || statusUpper === 'PARTIAL_DISCREPANCY');
-    const isHistorical = !isLatestRevision;
-
-    let items = (manifest.itemsSnapshot as any[]) || [];
-    if (!items || items.length === 0) {
-      const liveVanItems = await prisma.stockItem.findMany({
-        where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
-        include: { product: true },
-      });
-      items = liveVanItems.map((v) => ({
         id: v.id,
         productId: v.productId,
         productName: v.productName,
@@ -1754,43 +1399,592 @@ export const VanStockService = {
         quantity: v.quantity,
         basePrice: v.basePrice,
         discountPercent: v.companyDiscountPercent,
-        netUnitPrice: calcNetUnitPrice(v.basePrice, v.companyDiscountPercent),
-        totalValue: Math.round(calcNetUnitPrice(v.basePrice, v.companyDiscountPercent) * v.quantity * 100) / 100,
+        netUnitPrice: net,
+        totalValue: val,
         repChecked: v.repChecked,
         repCheckedAt: v.repCheckedAt ? v.repCheckedAt.toISOString() : null,
         discrepancyFlag: v.discrepancyFlag,
         status: v.status,
-      }));
+      };
+    });
+
+    // Revision preservation: if existing revision already dispatched, branch to a new revision record
+    const existingWithNo = await tx.dailyVanManifest.findUnique({ where: { manifestNo } });
+    let updated;
+
+    if (existingWithNo) {
+      updated = await tx.dailyVanManifest.update({
+        where: { id: existingWithNo.id },
+        data: {
+          manifestRevision: nextRev,
+          ownerSignatureData: signatureData || existingWithNo.ownerSignatureData,
+          ownerSignedBy: signer,
+          ownerSignedAt: targetDate,
+          status: 'DISPATCHED',
+          itemsSnapshot: itemsList as any,
+          totalUnits,
+          totalValue: Math.round(totalValue * 100) / 100,
+          repSignatureData: null,
+          repSignedBy: null,
+          repSignedAt: null,
+          uncheckedCount: 0,
+        },
+      });
+    } else if (targetManifest && targetManifest.status !== 'DRAFT') {
+      updated = await tx.dailyVanManifest.create({
+        data: {
+          manifestNo,
+          manifestRevision: nextRev,
+          manifestDate: targetDate,
+          vehicleId,
+          vehicleNumber: vehicle.vehicleNumber,
+          driverName: vehicle.driverName,
+          routeId: vehicle.routeId,
+          routeName: vehicle.routeName,
+          salesPersonId: vehicle.salesPersonId,
+          repName: vehicle.repName,
+          repPhone: vehicle.repPhone,
+          ownerSignatureData: signatureData || targetManifest.ownerSignatureData,
+          ownerSignedBy: signer,
+          ownerSignedAt: targetDate,
+          status: 'DISPATCHED',
+          itemsSnapshot: itemsList as any,
+          totalUnits,
+          totalValue: Math.round(totalValue * 100) / 100,
+          repSignatureData: null,
+          repSignedBy: null,
+          repSignedAt: null,
+          uncheckedCount: 0,
+        },
+      });
+    } else {
+      updated = await tx.dailyVanManifest.upsert({
+        where: { id: targetManifest?.id || 'new-uuid-placeholder' },
+        update: {
+          manifestNo,
+          manifestRevision: nextRev,
+          ownerSignatureData: signatureData || targetManifest?.ownerSignatureData,
+          ownerSignedBy: signer,
+          ownerSignedAt: targetDate,
+          status: 'DISPATCHED',
+          itemsSnapshot: itemsList as any,
+          totalUnits,
+          totalValue: Math.round(totalValue * 100) / 100,
+          repSignatureData: null,
+          repSignedBy: null,
+          repSignedAt: null,
+          uncheckedCount: 0,
+        },
+        create: {
+          manifestNo,
+          manifestRevision: 1,
+          manifestDate: targetDate,
+          vehicleId,
+          vehicleNumber: vehicle.vehicleNumber,
+          driverName: vehicle.driverName,
+          routeId: vehicle.routeId,
+          routeName: vehicle.routeName,
+          salesPersonId: vehicle.salesPersonId,
+          repName: vehicle.repName,
+          repPhone: vehicle.repPhone,
+          ownerSignatureData: signatureData,
+          ownerSignedBy: signer,
+          ownerSignedAt: targetDate,
+          status: 'DISPATCHED',
+          itemsSnapshot: itemsList as any,
+          totalUnits,
+          totalValue: Math.round(totalValue * 100) / 100,
+        },
+      });
+    }
+
+    // Persist owner signature to SystemSetting for future one-click re-use
+    if (signatureData) {
+      await tx.systemSetting.upsert({
+        where: { key: 'owner_saved_signature' },
+        update: { value: signatureData, updatedBy: user?.username || signer },
+        create: { key: 'owner_saved_signature', value: signatureData, updatedBy: user?.username || signer },
+      });
     }
 
     return {
-      manifestNo: manifest.manifestNo,
-      manifestDate: manifest.manifestDate.toISOString(),
-      manifestRevision: manifest.manifestRevision,
-      status: manifest.status,
-      isLatestRevision,
-      isActive,
-      isHistorical,
-      latestManifestNo: latestManifest?.manifestNo || manifest.manifestNo,
-      vehicle: {
-        id: vehicle.vehicleId,
-        vehicleNumber: manifest.vehicleNumber || vehicle.vehicleNumber,
-        driverName: manifest.driverName || vehicle.driverName,
-        route: manifest.routeName || vehicle.route,
-        repName: manifest.repName || vehicle.repName,
-        repPhone: manifest.repPhone || vehicle.repPhone,
+      success: true,
+      manifest: {
+        ...updated,
+        manifestDate: updated.manifestDate.toISOString(),
+        ownerSignedAt: updated.ownerSignedAt ? updated.ownerSignedAt.toISOString() : null,
+        repSignedAt: updated.repSignedAt ? updated.repSignedAt.toISOString() : null,
+        createdAt: updated.createdAt.toISOString(),
+        updatedAt: updated.updatedAt.toISOString(),
+        items: itemsList,
       },
-      ownerSignatureData: manifest.ownerSignatureData,
-      ownerSignedBy: manifest.ownerSignedBy,
-      ownerSignedAt: manifest.ownerSignedAt ? manifest.ownerSignedAt.toISOString() : null,
-      repSignatureData: manifest.repSignatureData,
-      repSignedBy: manifest.repSignedBy,
-      repSignedAt: manifest.repSignedAt ? manifest.repSignedAt.toISOString() : null,
-      totalUnits: manifest.totalUnits,
-      totalValue: manifest.totalValue,
-      uncheckedCount: manifest.uncheckedCount,
-      items,
     };
+  });
+},
+
+  /**
+   * Verifies manifest with sales representative digital signature.
+   * Evaluates checked items vs unchecked items to determine REP_ACCEPTED or PARTIAL_DISCREPANCY.
+   * Allows active item updates for DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
+   * Only blocks if manifest is strictly ARCHIVED, COMPLETED, or RETURNED.
+   */
+  async verifyManifestByRep(manifestNo?: string, dto: VerifyManifestByRepInput = {}) {
+  const rawSignature = dto.repSignature || dto.signatureData || dto.signature;
+  const repName = dto.repName?.trim() || 'Kamal Perera';
+  const code = manifestNo?.trim() || dto.manifestNo?.trim();
+
+  return await prisma.$transaction(async (tx) => {
+    let manifest = null;
+    if (code) {
+      manifest = await tx.dailyVanManifest.findFirst({
+        where: {
+          OR: [{ manifestNo: code }, { id: code }],
+        },
+      });
+    }
+    if (!manifest) {
+      let targetDate = new Date();
+      if (dto.date) {
+        const [y, m, d] = dto.date.split('-').map(Number);
+        if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+          targetDate = new Date(y, m - 1, d, 12, 0, 0);
+        }
+      }
+      const dayStart = new Date(targetDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(targetDate);
+      dayEnd.setHours(23, 59, 59, 999);
+
+      manifest = await tx.dailyVanManifest.findFirst({
+        where: {
+          vehicleId: dto.vehicleId || 'VAN-01',
+          manifestDate: { gte: dayStart, lte: dayEnd },
+        },
+        orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
+      });
+    }
+
+    if (!manifest) {
+      throw new AppError(`Manifest "${code || 'Daily'}" not found.`, 404);
+    }
+
+    // Relaxed Status Check: Allow active updates if manifest is DISPATCHED, PENDING, REP_ACCEPTED, or PARTIAL_DISCREPANCY.
+    // Only block the update if the status is strictly ARCHIVED, COMPLETED, or RETURNED.
+    const currentStatus = (manifest.status || '').toUpperCase();
+    const blockedStatuses = ['ARCHIVED', 'COMPLETED', 'RETURNED'];
+    if (blockedStatuses.includes(currentStatus)) {
+      throw new AppError('This manifest is archived or already closed.', 400);
+    }
+
+    const effectiveSig = rawSignature || manifest.repSignatureData;
+    if (!effectiveSig) {
+      throw new AppError('Representative Signature is required.', 400);
+    }
+    const signatureData = validateSignatureDataUrl(effectiveSig, 'Representative Signature');
+
+    const vehicle = await resolveVehicleContext(manifest.vehicleId, tx);
+
+    // Active van items
+    const vanItems = await tx.stockItem.findMany({
+      where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
+      include: { product: true },
+    });
+
+    const checkedItemMap = new Map<number, boolean>();
+    if (dto.items && Array.isArray(dto.items)) {
+      dto.items.forEach((i) => checkedItemMap.set(i.itemId, Boolean(i.repChecked)));
+    } else {
+      // If not itemized in dto, mark all active items as checked (repChecked = true)
+      vanItems.forEach((i) => checkedItemMap.set(i.id, true));
+    }
+
+    let uncheckedCount = 0;
+    const now = new Date();
+
+    for (const item of vanItems) {
+      const isChecked = checkedItemMap.has(item.id) ? checkedItemMap.get(item.id)! : item.repChecked;
+      if (isChecked) {
+        await tx.stockItem.update({
+          where: { id: item.id },
+          data: {
+            status: 'APPROVED',
+            repChecked: true,
+            repCheckedAt: item.repCheckedAt || now,
+            discrepancyFlag: false,
+            confirmedBy: repName,
+            confirmedAt: now,
+          },
+        });
+      } else {
+        uncheckedCount += 1;
+        await tx.stockItem.update({
+          where: { id: item.id },
+          data: {
+            status: 'PENDING_CONFIRMATION',
+            repChecked: false,
+            repCheckedAt: null,
+            discrepancyFlag: true,
+            confirmedBy: null,
+            confirmedAt: null,
+          },
+        });
+      }
+    }
+
+    // Set status = "REP_ACCEPTED" upon full verification or PARTIAL_DISCREPANCY if items are unchecked
+    const finalStatus = uncheckedCount === 0 ? 'REP_ACCEPTED' : 'PARTIAL_DISCREPANCY';
+
+    // Re-snapshot van items
+    const updatedVanItems = await tx.stockItem.findMany({
+      where: { locationId: vehicle.locationId, quantity: { gt: 0 }, isActive: true },
+      include: { product: true },
+    });
+
+    const itemsList = updatedVanItems.map((v) => {
+      const net = calcNetUnitPrice(v.basePrice, v.companyDiscountPercent);
+      const val = Math.round(net * v.quantity * 100) / 100;
+      return {
+        id: v.id,
+        productId: v.productId,
+        productName: v.productName,
+        sku: v.sku || v.product?.sku || '',
+        unit: v.unit || v.product?.unit || 'Unit',
+        quantity: v.quantity,
+        basePrice: v.basePrice,
+        discountPercent: v.companyDiscountPercent,
+        netUnitPrice: net,
+        totalValue: val,
+        repChecked: v.repChecked,
+        repCheckedAt: v.repCheckedAt ? v.repCheckedAt.toISOString() : null,
+        discrepancyFlag: v.discrepancyFlag,
+        status: v.status,
+      };
+    });
+
+    let morningCheckedItems: string[] = [];
+    if (Array.isArray(dto.morningCheckedItems)) {
+      morningCheckedItems = dto.morningCheckedItems.map(String);
+    } else if (dto.morningCheckedItems && typeof dto.morningCheckedItems === 'object') {
+      morningCheckedItems = Object.keys(dto.morningCheckedItems).filter(
+        (k) => Boolean(dto.morningCheckedItems[k])
+      );
+    } else {
+      morningCheckedItems = vanItems
+        .filter((item) => checkedItemMap.get(item.id))
+        .map((item) => item.sku || String(item.productId || item.id));
+    }
+
+    const updatedManifest = await tx.dailyVanManifest.update({
+      where: { id: manifest.id },
+      data: {
+        repSignatureData: signatureData,
+        repSignedBy: repName,
+        repSignedAt: manifest.manifestDate || now,
+        status: finalStatus,
+        uncheckedCount,
+        morningCheckedItems: morningCheckedItems as any,
+        itemsSnapshot: itemsList as any,
+      },
+    });
+
+    // Persist sales rep signature to SystemSetting for future one-click re-use
+    if (signatureData) {
+      const repKey = manifest.salesPersonId
+        ? `rep_saved_signature_${manifest.salesPersonId}`
+        : (vehicle.salesPersonId ? `rep_saved_signature_${vehicle.salesPersonId}` : 'rep_saved_signature_default');
+      await tx.systemSetting.upsert({
+        where: { key: repKey },
+        update: { value: signatureData, updatedBy: repName },
+        create: { key: repKey, value: signatureData, updatedBy: repName },
+      });
+    }
+
+    return {
+      success: true,
+      isFullVerification: uncheckedCount === 0,
+      uncheckedCount,
+      manifest: {
+        ...updatedManifest,
+        repSignature: updatedManifest.repSignatureData,
+        morningCheckedItems,
+        eveningCheckedItems: updatedManifest.eveningCheckedItems || [],
+        manifestDate: updatedManifest.manifestDate.toISOString(),
+        ownerSignedAt: updatedManifest.ownerSignedAt ? updatedManifest.ownerSignedAt.toISOString() : null,
+        repSignedAt: updatedManifest.repSignedAt ? updatedManifest.repSignedAt.toISOString() : null,
+        createdAt: updatedManifest.createdAt.toISOString(),
+        updatedAt: updatedManifest.updatedAt.toISOString(),
+        items: itemsList,
+      },
+    };
+  });
+},
+
+  /**
+   * Retrieves saved digital signatures for Owner and Sales Rep from SystemSetting.
+   */
+  async getSavedSignatures(repId ?: string) {
+  const ownerSetting = await prisma.systemSetting.findUnique({
+    where: { key: 'owner_saved_signature' },
+  });
+
+  let repSetting = null;
+  if (repId) {
+    repSetting = await prisma.systemSetting.findUnique({
+      where: { key: `rep_saved_signature_${repId}` },
+    });
+  }
+  if (!repSetting) {
+    // Check fallback default rep signature
+    repSetting = await prisma.systemSetting.findUnique({
+      where: { key: 'rep_saved_signature_default' },
+    });
+  }
+
+  return {
+    ownerSignature: ownerSetting?.value || null,
+    repSignature: repSetting?.value || null,
+  };
+},
+
+  /**
+   * Directly saves or updates an Owner or Rep signature in SystemSetting.
+   */
+  async saveSignature(
+  dto: { type: 'owner' | 'rep'; repId?: string; signatureData: string },
+  user ?: AuthenticatedUser
+) {
+  const validData = validateSignatureDataUrl(dto.signatureData, `${dto.type === 'owner' ? 'Owner' : 'Rep'} Signature`);
+  const key = dto.type === 'owner'
+    ? 'owner_saved_signature'
+    : (dto.repId ? `rep_saved_signature_${dto.repId}` : 'rep_saved_signature_default');
+
+  const updated = await prisma.systemSetting.upsert({
+    where: { key },
+    update: { value: validData, updatedBy: user?.username || dto.type },
+    create: { key, value: validData, updatedBy: user?.username || dto.type },
+  });
+
+  return { success: true, key: updated.key };
+},
+
+  /**
+   * Immediately persists Morning Check or Evening Reconciliation Check to DB.
+   */
+  async toggleItemCheck(
+    itemId: number,
+    type: 'morning' | 'evening',
+    checked: boolean,
+    vehicleId: string = 'VAN-01',
+    dateStr?: string
+  ) {
+    const vehicle = await resolveVehicleContext(vehicleId, prisma);
+    const now = new Date();
+
+    let targetDate = new Date();
+    if (dateStr) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        targetDate = new Date(y, m - 1, d, 12, 0, 0);
+      }
+    }
+
+    const dayStart = new Date(targetDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const isToday = dayStart.toDateString() === new Date().toDateString();
+
+    // 1. If morning check AND target date is today: update canonical StockItem directly
+    if (type === 'morning' && isToday) {
+      await prisma.stockItem.update({
+        where: { id: itemId },
+        data: {
+          repChecked: checked,
+          repCheckedAt: checked ? now : null,
+          status: checked ? 'APPROVED' : 'PENDING_CONFIRMATION',
+          discrepancyFlag: !checked,
+        },
+      });
+    }
+
+    // 2. Update target date's DailyVanManifest itemsSnapshot, morningCheckedItems, eveningCheckedItems
+    let manifest = await prisma.dailyVanManifest.findFirst({
+      where: {
+        vehicleId,
+        manifestDate: { gte: dayStart, lte: dayEnd },
+      },
+      orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    if (manifest) {
+      const targetItem = await prisma.stockItem.findUnique({
+        where: { id: itemId },
+        include: { product: true },
+      });
+      const sku = targetItem?.sku || targetItem?.product?.sku || '';
+      const pidStr = targetItem?.productId ? String(targetItem.productId) : '';
+      const idStr = String(itemId);
+
+      let morningChecked: string[] = Array.isArray(manifest.morningCheckedItems)
+        ? (manifest.morningCheckedItems as any[]).map(String)
+        : [];
+      let eveningChecked: string[] = Array.isArray(manifest.eveningCheckedItems)
+        ? (manifest.eveningCheckedItems as any[]).map(String)
+        : [];
+
+      if (type === 'morning') {
+        if (checked) {
+          if (sku && !morningChecked.includes(sku)) morningChecked.push(sku);
+          if (pidStr && !morningChecked.includes(pidStr)) morningChecked.push(pidStr);
+          if (!morningChecked.includes(idStr)) morningChecked.push(idStr);
+        } else {
+          morningChecked = morningChecked.filter((x) => x !== sku && x !== pidStr && x !== idStr);
+        }
+      } else if (type === 'evening') {
+        if (checked) {
+          if (sku && !eveningChecked.includes(sku)) eveningChecked.push(sku);
+          if (pidStr && !eveningChecked.includes(pidStr)) eveningChecked.push(pidStr);
+          if (!eveningChecked.includes(idStr)) eveningChecked.push(idStr);
+        } else {
+          eveningChecked = eveningChecked.filter((x) => x !== sku && x !== pidStr && x !== idStr);
+        }
+      }
+
+      let uncheckedCount = 0;
+      let updatedSnapshot = manifest.itemsSnapshot;
+      if (Array.isArray(manifest.itemsSnapshot)) {
+        updatedSnapshot = (manifest.itemsSnapshot as any[]).map((snap) => {
+          if (snap.id === itemId || (targetItem?.productId && snap.productId === targetItem.productId)) {
+            const updated = {
+              ...snap,
+              repChecked: type === 'morning' ? checked : (snap.repChecked ?? false),
+              eveningReconciled: type === 'evening' ? checked : (snap.eveningReconciled ?? false),
+            };
+            if (!updated.repChecked) uncheckedCount += 1;
+            return updated;
+          }
+          if (!snap.repChecked) uncheckedCount += 1;
+          return snap;
+        });
+      }
+
+      await prisma.dailyVanManifest.update({
+        where: { id: manifest.id },
+        data: {
+          itemsSnapshot: updatedSnapshot as any,
+          uncheckedCount,
+          morningCheckedItems: morningChecked as any,
+          eveningCheckedItems: eveningChecked as any,
+        },
+      });
+    }
+
+    return {
+      success: true,
+      itemId,
+      type,
+      checked,
+      date: dateStr || dayStart.toISOString().slice(0, 10),
+    };
+  },
+
+  /**
+   * Persists the evening reconciliation checklist items for the specified date and vehicle.
+   */
+  async saveEveningChecks(dto: ReconcileEveningChecksInput) {
+    const vehicleId = dto.vehicleId || 'VAN-01';
+    let targetDate = new Date();
+    if (dto.date) {
+      const [y, m, d] = dto.date.split('-').map(Number);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        targetDate = new Date(y, m - 1, d, 12, 0, 0);
+      }
+    }
+
+    const dayStart = new Date(targetDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    let eveningCheckedItems: string[] = [];
+    if (Array.isArray(dto.eveningCheckedItems)) {
+      eveningCheckedItems = dto.eveningCheckedItems.map(String);
+    } else if (dto.eveningCheckedItems && typeof dto.eveningCheckedItems === 'object') {
+      eveningCheckedItems = Object.keys(dto.eveningCheckedItems).filter(
+        (k) => Boolean(dto.eveningCheckedItems[k])
+      );
+    }
+
+    return await prisma.$transaction(async (tx) => {
+      let manifest = null;
+      if (dto.manifestNo) {
+        manifest = await tx.dailyVanManifest.findFirst({
+          where: {
+            OR: [{ manifestNo: dto.manifestNo }, { id: dto.manifestNo }],
+          },
+        });
+      }
+      if (!manifest) {
+        manifest = await tx.dailyVanManifest.findFirst({
+          where: {
+            vehicleId,
+            manifestDate: { gte: dayStart, lte: dayEnd },
+          },
+          orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
+        });
+      }
+
+      if (!manifest) {
+        manifest = await tx.dailyVanManifest.create({
+          data: {
+            manifestNo: generateManifestNo(targetDate, 1),
+            manifestDate: targetDate,
+            vehicleId,
+            status: 'DRAFT',
+            eveningCheckedItems: eveningCheckedItems as any,
+          },
+        });
+      } else {
+        let updatedSnapshot = manifest.itemsSnapshot;
+        if (Array.isArray(manifest.itemsSnapshot)) {
+          updatedSnapshot = (manifest.itemsSnapshot as any[]).map((snap) => {
+            const isReconciled =
+              eveningCheckedItems.includes(snap.sku) ||
+              eveningCheckedItems.includes(String(snap.id)) ||
+              eveningCheckedItems.includes(String(snap.productId));
+            return {
+              ...snap,
+              eveningReconciled: isReconciled,
+              eveningReconciledAt: isReconciled ? new Date().toISOString() : null,
+            };
+          });
+        }
+
+        manifest = await tx.dailyVanManifest.update({
+          where: { id: manifest.id },
+          data: {
+            eveningCheckedItems: eveningCheckedItems as any,
+            itemsSnapshot: updatedSnapshot as any,
+          },
+        });
+      }
+
+      return {
+        success: true,
+        manifestNo: manifest.manifestNo,
+        date: dto.date || dayStart.toISOString().slice(0, 10),
+        eveningCheckedItems,
+        manifest: {
+          ...manifest,
+          manifestDate: manifest.manifestDate.toISOString(),
+          ownerSignedAt: manifest.ownerSignedAt ? manifest.ownerSignedAt.toISOString() : null,
+          repSignedAt: manifest.repSignedAt ? manifest.repSignedAt.toISOString() : null,
+          createdAt: manifest.createdAt.toISOString(),
+          updatedAt: manifest.updatedAt.toISOString(),
+        },
+      };
+    });
   },
 };
 

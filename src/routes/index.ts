@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express from 'express';
 import storeRoutes from './storeRoutes.ts';
 import salesPersonRoutes from './salesPersonRoutes.ts';
 import invoiceRoutes from './invoiceRoutes.ts';
@@ -11,6 +11,7 @@ import warehouseRoutes from './warehouseRoutes.ts';
 import vanStockRoutes from './vanStockRoutes.ts';
 import damagedGoodsRoutes from './damagedGoodsRoutes.ts';
 import manifestRoutes from './manifestRoutes.ts';
+import categoryRoutes from './categoryRoutes.ts';
 import { authMiddleware } from '../middlewares/authMiddleware.ts';
 import { getDatabaseHealth } from '../config/database.ts';
 
@@ -18,7 +19,7 @@ import healthRoutes from './health.routes.ts';
 import userRoutes from './userRoutes.ts';
 import settingsRoutes from './settingsRoutes.ts';
 
-const router = Router();
+const router = express.Router();
 
 // Health Check (Lightweight ping endpoint with { status: "ok" })
 router.use('/health', healthRoutes);
@@ -26,11 +27,9 @@ router.use('/health', healthRoutes);
 // Unauthenticated / Auth Routes
 router.use('/auth', authRoutes);
 
-// Manifest Routes (contains public /share/:manifestNo and protected sub-routes)
-router.use('/manifests', manifestRoutes);
-
 // Protected Core Resource Routes
 router.use(authMiddleware);
+router.use('/manifests', manifestRoutes);
 router.use('/users', userRoutes);
 router.use('/stores', storeRoutes);
 router.use('/sales-persons', salesPersonRoutes);
@@ -40,6 +39,7 @@ router.use('/routes', routeRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportRoutes);
 router.use('/warehouse', warehouseRoutes);
+router.use('/categories', categoryRoutes);
 router.use('/van-stock', vanStockRoutes);
 router.use('/damaged-goods', damagedGoodsRoutes);
 router.use('/settings', settingsRoutes);

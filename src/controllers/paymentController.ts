@@ -254,9 +254,9 @@ const paymentController = {
 
   /**
    * POST /api/payments/collect
-   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   * ---------------------------------------------------------------
    * ENTERPRISE PAYMENT COLLECTION WITH ATOMIC TRANSACTION
-   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   * ---------------------------------------------------------------
    * 
    * This is THE critical business operation. When a payment is collected:
    * 
@@ -292,15 +292,15 @@ const paymentController = {
       const normalizedDescription = normalizeText(description);
       const requestedAmount = rawAmountPaid ?? amount;
 
-      // â”€â”€ Validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // -- Validation ------------------------------------------
       if (!rawInvoiceId) {
         return res.status(400).json({ success: false, error: 'invoiceId is required' });
       }
 
-      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      // ----------------------------------------------------------
       // TYPE-SAFETY LOCK: Prisma schema defines Invoice.id as String (UUID).
       // Force-stringify the incoming invoiceId as a baseline safety measure.
-      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      // ----------------------------------------------------------
       const invoiceId = String(rawInvoiceId);
 
       if (!requestedAmount || parseFloat(requestedAmount) <= 0) {
@@ -309,15 +309,15 @@ const paymentController = {
 
       const payAmount = toMoneyNumber(requestedAmount);
 
-      // â”€â”€ Atomic Transaction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // -- Atomic Transaction ----------------------------------
       const result = await prisma.$transaction(async (tx) => {
         // 1. Lock and read the invoice within the transaction
-        //    â”€â”€ DUAL-LOOKUP STRATEGY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        //    -- DUAL-LOOKUP STRATEGY ---------------------------
         //    First, attempt to find by UUID (Prisma Invoice.id).
         //    If that fails, fall back to documentNo (human-readable
         //    code like "INV-2600005"). This ensures resilience
         //    regardless of whether the frontend passes the UUID or
-        //    the document code â€” especially critical after seed
+        //    the document code - especially critical after seed
         //    resets that regenerate UUIDs.
         let invoice = await tx.invoice.findUnique({
           where: { id: invoiceId },
@@ -460,10 +460,10 @@ const paymentController = {
         });
       }
 
-      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      // ----------------------------------------------------------
       // TYPE-SAFETY LOCK: Coerce each invoiceId to String to match
       // Prisma schema (Invoice.id = String/UUID) before queries.
-      // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      // ----------------------------------------------------------
       const safePayments = payments.map(p => ({
         ...p,
         invoiceId: String(p.invoiceId),

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express from 'express';
 import type { Request, Response } from 'express';
 import { getDatabaseHealth } from '../config/database.ts';
 
@@ -6,7 +6,7 @@ import { getDatabaseHealth } from '../config/database.ts';
  * Health check router.
  * Provides a lightweight status check for network resilience and monitoring.
  */
-const healthRouter = Router();
+const healthRouter = express.Router();
 
 /**
  * GET /api/health

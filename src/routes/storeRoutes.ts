@@ -1,9 +1,9 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import { StoreController } from '../controllers/store.controller.ts';
 
-const router = Router();
+const router = express.Router();
 
-// GET /api/stores/routes â€” must be before /:id to avoid route param conflict
+// GET /api/stores/routes - must be before /:id to avoid route param conflict
 router.get('/routes', StoreController.listRoutes);
 
 // GET /api/stores

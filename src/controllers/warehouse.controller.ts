@@ -80,6 +80,44 @@ export const WarehouseController = {
     const result = await WarehouseService.saveOwnerSignature(req.body, req.user!);
     res.status(200).json({ success: true, data: result });
   }),
+
+  /**
+   * GET /api/warehouse/categories
+   * List dynamic categories.
+   */
+  getCategories: catchAsync(async (_req: Request, res: Response) => {
+    const result = await WarehouseService.getCategories();
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
+   * POST /api/warehouse/categories
+   * Create dynamic category.
+   */
+  createCategory: catchAsync(async (req: Request, res: Response) => {
+    const result = await WarehouseService.createCategory(req.body, req.user);
+    res.status(201).json({ success: true, data: result });
+  }),
+
+  /**
+   * PUT /api/warehouse/categories/:id
+   * Update category.
+   */
+  updateCategory: catchAsync(async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    const result = await WarehouseService.updateCategory(id, req.body, req.user);
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
+   * DELETE /api/warehouse/categories/:id
+   * Delete category.
+   */
+  deleteCategory: catchAsync(async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    const result = await WarehouseService.deleteCategory(id, req.user);
+    res.status(200).json({ success: true, ...result });
+  }),
 };
 
 export default WarehouseController;

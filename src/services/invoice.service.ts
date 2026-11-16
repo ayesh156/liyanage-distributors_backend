@@ -566,8 +566,8 @@ export class InvoiceService {
   /**
    * DELETE /api/invoices/:id
    * CONSTRAINT-AWARE SOFT/HARD DELETE:
-   * - If payments exist â†’ soft-delete by cancelling (balanceDue = 0, status = cancelled)
-   * - If no payments â†’ hard-delete permanently
+   * - If payments exist -> soft-delete by cancelling (balanceDue = 0, status = cancelled)
+   * - If no payments -> hard-delete permanently
    */
   static async delete(id: string): Promise<{ softDeleted: boolean }> {
     const existing = await prisma.invoice.findUnique({
@@ -580,7 +580,7 @@ export class InvoiceService {
     }
 
     if (existing._count.payments > 0) {
-      // Soft delete â€” cancel the invoice
+      // Soft delete - cancel the invoice
       await prisma.$transaction(async (tx) => {
         await tx.invoice.update({
           where: { id },
@@ -592,7 +592,7 @@ export class InvoiceService {
       return { softDeleted: true };
     }
 
-    // No payments â€” hard delete
+    // No payments - hard delete
     await prisma.$transaction(async (tx) => {
       await tx.invoice.delete({ where: { id } });
       await recomputeStoreOutstandingBalance(tx, existing.storeId);

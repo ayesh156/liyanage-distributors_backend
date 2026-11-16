@@ -9,7 +9,8 @@ export const ManifestController = {
    */
   getDaily: catchAsync(async (req: Request, res: Response) => {
     const vehicleId = (req.query.vehicleId as string) || 'VAN-01';
-    const result = await VanStockService.getDailyManifest(vehicleId);
+    const date = req.query.date as string | undefined;
+    const result = await VanStockService.getDailyManifest(vehicleId, date);
     res.status(200).json({ success: true, data: result });
   }),
 
@@ -35,7 +36,7 @@ export const ManifestController = {
 
   /**
    * POST /api/manifests/verify-rep
-   * Internal rep verification endpoint with discrepancy analysis.
+   * Internal rep verification endpoint with discrepancy analysis and morning check persistence.
    */
   verifyByRep: catchAsync(async (req: Request, res: Response) => {
     const manifestNo = req.body.manifestNo;
@@ -44,65 +45,48 @@ export const ManifestController = {
   }),
 
   /**
-   * GET /api/manifests/share/:manifestNo
-   * PUBLIC endpoint (Zero-login required for WhatsApp field link).
-   * Strictly returns non-sensitive manifest data and line-item snapshot.
-   * Wrapped in robust try/catch block to return clean 404 on missing records
-   * and graceful 500 responses on unexpected database query failures.
+   * POST /api/manifests/reconcile-evening
+   * Persists the evening reconciliation checklist items for the specified date.
    */
-  getPublicShare: async (req: Request, res: Response) => {
-    try {
-      const rawManifestNo = req.params?.manifestNo;
-      if (!rawManifestNo || typeof rawManifestNo !== 'string' || !rawManifestNo.trim()) {
-        return res.status(404).json({ success: false, error: 'Manifest not found' });
-      }
-
-      const manifestNo = rawManifestNo.trim();
-      const result = await VanStockService.getPublicManifestShare(manifestNo);
-      if (!result) {
-        return res.status(404).json({ success: false, error: 'Manifest not found' });
-      }
-
-      return res.status(200).json({ success: true, data: result });
-    } catch (error: any) {
-      const statusCode = error?.statusCode || (typeof error?.status === 'number' ? error.status : null);
-      if (
-        statusCode === 404 ||
-        error?.code === 'P2025' ||
-        error?.message?.toLowerCase().includes('not found')
-      ) {
-        return res.status(404).json({ success: false, error: 'Manifest not found' });
-      }
-
-      console.error(`[ManifestController.getPublicShare] Database query error for manifest "${req.params?.manifestNo}":`, error);
-      return res.status(500).json({
-        success: false,
-        error: 'Database connection or query failure while fetching manifest',
-      });
-    }
-  },
-
-  /**
-   * POST /api/manifests/share/:manifestNo/verify
-   * PUBLIC endpoint (Zero-login WhatsApp rep acceptance).
-   * Validates digital signature and item-level check status.
-   */
-  verifyPublicShare: catchAsync(async (req: Request, res: Response) => {
-    const manifestNo = String(req.params.manifestNo);
-    const result = await VanStockService.verifyManifestByRep(manifestNo, req.body);
+  reconcileEvening: catchAsync(async (req: Request, res: Response) => {
+    const result = await VanStockService.saveEveningChecks(req.body);
     res.status(200).json({ success: true, data: result });
   }),
 
   /**
-   * PUT/POST /api/manifests/share/:manifestNo/sign
-   * PUBLIC endpoint (Zero-login WhatsApp rep acceptance).
-   * Validates digital signature, explicitly sets status = "REP_ACCEPTED",
-   * updates manifest items to repChecked = true, and returns the updated manifest.
+   * GET /api/manifests/saved-signatures
+   * Retrieves saved digital signatures for Owner and designated Sales Rep from SystemSetting.
    */
-  signPublicShare: catchAsync(async (req: Request, res: Response) => {
-    const manifestNo = String(req.params.manifestNo);
-    const result = await VanStockService.verifyManifestByRep(manifestNo, req.body);
-    res.status(200).json({ success: true, data: result.manifest || result });
+  getSavedSignatures: catchAsync(async (req: Request, res: Response) => {
+    const repId = req.query.repId as string | undefined;
+    const result = await VanStockService.getSavedSignatures(repId);
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
+   * POST /api/manifests/saved-signatures
+   * Persists or updates saved digital signatures in SystemSetting for one-click re-use.
+   */
+  saveSignature: catchAsync(async (req: Request, res: Response) => {
+    const { type, repId, signatureData } = req.body;
+    const result = await VanStockService.saveSignature({ type, repId, signatureData }, req.user);
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
+   * POST /api/manifests/toggle-item-check
+   * Immediately persists Morning Check or Evening Reconciliation Check to DB.
+   */
+  toggleItemCheck: catchAsync(async (req: Request, res: Response) => {
+    const { itemId, type, checked, vehicleId, date } = req.body;
+    const result = await VanStockService.toggleItemCheck(
+      Number(itemId),
+      type as 'morning' | 'evening',
+      Boolean(checked),
+      vehicleId,
+      date as string | undefined
+    );
+    res.status(200).json({ success: true, data: result });
   }),
 };
 

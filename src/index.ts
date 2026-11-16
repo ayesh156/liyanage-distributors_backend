@@ -21,7 +21,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.set('trust proxy', 1);
 
-// â”€â”€ BULLETPROOF CORS CONFIGURATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- BULLETPROOF CORS CONFIGURATION ---------------------------
 const allowedOrigins = [
   'https://lhdd.ecosystemlk.app',
   'https://api.lhdd.ecosystemlk.app',
@@ -78,10 +78,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// â”€â”€ API Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- API Routes -----------------------------------------------
 app.use('/api', router);
 
-// â”€â”€ 404 Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- 404 Handler ----------------------------------------------
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -113,7 +113,7 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
   });
 });
 
-// â”€â”€ HTTP Server & OpenLiteSpeed lsnode Dual Support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- HTTP Server & OpenLiteSpeed lsnode Dual Support -----------
 const httpServer = createServer(app);
 
 // OpenLiteSpeed lsnode pipe socket à·ƒà·„ Local Port dual-support

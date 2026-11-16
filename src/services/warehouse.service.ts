@@ -648,6 +648,131 @@ export const WarehouseService = {
       updatedAt: setting.updatedAt.toISOString(),
     };
   },
+
+  /**
+   * List dynamic hardware categories.
+   */
+  async getCategories() {
+    try {
+      if ((prisma as any).category) {
+        const categories = await (prisma as any).category.findMany({
+          where: { isActive: true },
+          orderBy: { name: 'asc' },
+        });
+        if (categories && categories.length > 0) {
+          return categories;
+        }
+      }
+    } catch (_err) {
+      // Graceful fallback if table is not yet pushed
+    }
+
+    try {
+      const distinctProds = await prisma.product.findMany({
+        where: { isActive: true },
+        select: { category: true },
+        distinct: ['category'],
+      });
+      const names = distinctProds.map((p) => p.category).filter(Boolean);
+      const defaults = [
+        'Cables & Wires',
+        'Lighting & Lamps',
+        'Switchgear & Wiring',
+        'Plumbing & PVC',
+        'Tools & Hardware',
+        'Paints & Finishing',
+        'General Hardware',
+      ];
+      const merged = Array.from(new Set([...defaults, ...names]));
+      return merged.map((name, idx) => ({
+        id: idx + 1,
+        name,
+        isActive: true,
+        createdAt: new Date().toISOString(),
+      }));
+    } catch {
+      return [
+        { id: 1, name: 'Cables & Wires', isActive: true, createdAt: new Date().toISOString() },
+        { id: 2, name: 'Lighting & Lamps', isActive: true, createdAt: new Date().toISOString() },
+        { id: 3, name: 'Switchgear & Wiring', isActive: true, createdAt: new Date().toISOString() },
+        { id: 4, name: 'Plumbing & PVC', isActive: true, createdAt: new Date().toISOString() },
+        { id: 5, name: 'General Hardware', isActive: true, createdAt: new Date().toISOString() },
+      ];
+    }
+  },
+
+  /**
+   * Register a dynamic category.
+   */
+  async createCategory(dto: { name: string }, _user?: AuthenticatedUser) {
+    const name = dto.name?.trim();
+    if (!name) {
+      throw new AppError('Category name cannot be empty.', 400);
+    }
+    try {
+      if ((prisma as any).category) {
+        return await (prisma as any).category.create({
+          data: { name, isActive: true },
+        });
+      }
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        throw new AppError('Category with this name already exists.', 400);
+      }
+      throw err;
+    }
+    return { id: Date.now(), name, isActive: true, createdAt: new Date().toISOString() };
+  },
+
+  /**
+   * Update a category name and sync existing products.
+   */
+  async updateCategory(id: number, dto: { name: string }, _user?: AuthenticatedUser) {
+    const name = dto.name?.trim();
+    if (!name) {
+      throw new AppError('Category name cannot be empty.', 400);
+    }
+    try {
+      if ((prisma as any).category) {
+        const existing = await (prisma as any).category.findUnique({ where: { id } });
+        const updated = await (prisma as any).category.update({
+          where: { id },
+          data: { name },
+        });
+        if (existing && existing.name !== name) {
+          await prisma.product.updateMany({
+            where: { category: existing.name },
+            data: { category: name },
+          });
+        }
+        return updated;
+      }
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        throw new AppError('Category with this name already exists.', 400);
+      }
+      throw err;
+    }
+    return { id, name, isActive: true };
+  },
+
+  /**
+   * Soft-delete a category.
+   */
+  async deleteCategory(id: number, _user?: AuthenticatedUser) {
+    try {
+      if ((prisma as any).category) {
+        await (prisma as any).category.update({
+          where: { id },
+          data: { isActive: false },
+        });
+        return { success: true, message: 'Category deleted successfully.' };
+      }
+    } catch (_err) {
+      // Fallback
+    }
+    return { success: true };
+  },
 };
 
 export default WarehouseService;

@@ -18,7 +18,7 @@ export const VanStockController = {
    * Store-to-Vehicle transfer loading.
    */
   loadStock: catchAsync(async (req: Request, res: Response) => {
-    const result = await VanStockService.loadToVan(req.body, req.user!);
+    const result = await VanStockService.loadToVan(req.body, req.user);
     res.status(200).json({ success: true, data: result });
   }),
 
@@ -45,7 +45,7 @@ export const VanStockController = {
    * Return unsold stock from vehicle back to Central Warehouse.
    */
   returnStock: catchAsync(async (req: Request, res: Response) => {
-    const result = await VanStockService.returnToWarehouse(req.body, req.user!);
+    const result = await VanStockService.returnToWarehouse(req.body, req.user);
     res.status(200).json({ success: true, data: result });
   }),
 

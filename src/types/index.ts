@@ -485,6 +485,8 @@ export interface DailyVanManifestDTO {
   uncheckedCount: number;
   totalUnits: number;
   totalValue: number;
+  morningCheckedItems?: any;
+  eveningCheckedItems?: any;
   itemsSnapshot?: any;
   items?: any[];
   createdAt: string;
@@ -514,12 +516,19 @@ export interface AdjustWarehouseStockInput {
   performedBy?: string;
 }
 
-export interface LoadToVanInput {
+export interface LoadToVanItemInput {
   productId: number;
   quantity: number;
+  notes?: string;
+}
+
+export interface LoadToVanInput {
+  productId?: number;
+  quantity?: number;
   repName?: string;
   notes?: string;
   vehicleId?: string;
+  items?: LoadToVanItemInput[];
 }
 
 export interface EditVanQtyInput {
@@ -546,12 +555,20 @@ export interface RecordRoadSaleInput {
   vehicleId?: string;
 }
 
-export interface ReturnToStoreInput {
+export interface ReturnToStoreItemInput {
   productId: number;
   quantity: number;
   reason?: string;
+}
+
+export interface ReturnToStoreInput {
+  productId?: number;
+  quantity?: number;
+  reason?: string;
+  notes?: string;
   performedBy?: string;
   vehicleId?: string;
+  items?: ReturnToStoreItemInput[];
 }
 
 export interface QuarantineDamagedInput {
@@ -559,7 +576,8 @@ export interface QuarantineDamagedInput {
   vehicleId?: string;
   fromLocation?: 'VEHICLE' | 'MAIN_STORE';
   quantity: number;
-  reason: string;
+  reason?: string;
+  notes?: string;
   sourceInvoiceNo?: string;
   manifestNo?: string;
   sourceManifestNo?: string;
@@ -582,14 +600,24 @@ export interface SignManifestByOwnerInput {
 
 export interface VerifyManifestByRepInput {
   manifestNo?: string;
+  vehicleId?: string;
+  date?: string;
   signatureData?: string;
   repSignature?: string;
   signature?: string;
   repName?: string;
+  morningCheckedItems?: string[] | any;
   items?: Array<{
     itemId: number;
     repChecked: boolean;
   }>;
+}
+
+export interface ReconcileEveningChecksInput {
+  manifestNo?: string;
+  vehicleId?: string;
+  date?: string;
+  eveningCheckedItems: string[] | any;
 }
 
 export interface SaveOwnerSignatureInput {

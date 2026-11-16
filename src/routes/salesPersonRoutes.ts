@@ -1,7 +1,7 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import { SalesPersonController } from '../controllers/salesPerson.controller.ts';
 
-const router = Router();
+const router = express.Router();
 
 // GET /api/sales-persons
 router.get('/', SalesPersonController.list);

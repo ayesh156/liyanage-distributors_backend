@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import express from 'express';
 import { DamagedGoodsController } from '../controllers/damagedGoods.controller.ts';
 import { adminOnly } from '../middlewares/authMiddleware.ts';
 
-const router = Router();
+const router = express.Router();
 
 // Quarantined defective goods ledger
 router.get('/', DamagedGoodsController.list);

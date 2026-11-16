@@ -1,12 +1,12 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import invoiceController from '../controllers/invoiceController.ts';
 
-const router = Router();
+const router = express.Router();
 
-// GET /api/invoices/outstanding â€” must be before /:id to avoid route param conflict
+// GET /api/invoices/outstanding - must be before /:id to avoid route param conflict
 router.get('/outstanding', invoiceController.outstanding);
 
-// GET /api/invoices/summary â€” must be before /:id to avoid route param conflict
+// GET /api/invoices/summary - must be before /:id to avoid route param conflict
 router.get('/summary', invoiceController.summary);
 
 // GET /api/invoices

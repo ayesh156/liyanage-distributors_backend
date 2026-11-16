@@ -315,9 +315,9 @@ const invoiceController = {
 
   /**
    * GET /api/invoices/outstanding
-   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   * ---------------------------------------------------------------
    * FULL OUTSTANDING REPORT ENDPOINT
-   * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   * ---------------------------------------------------------------
    *
    * Returns all invoice rows with balance calculations, ordered by date ASC.
    * The frontend groups them by store and computes running balances
@@ -763,7 +763,7 @@ const invoiceController = {
         return res.status(404).json({ success: false, error: 'Invoice not found' });
       }
 
-      // â”€â”€ INVOICE EDIT OVERPAYMENT GUARD: Prevent received > amount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // -- INVOICE EDIT OVERPAYMENT GUARD: Prevent received > amount ----------
       if (received !== undefined && amount !== undefined && Number(received) > Number(amount)) {
         return res.status(400).json({
           success: false,
@@ -782,7 +782,7 @@ const invoiceController = {
       if (status !== undefined) updateData.status = status;
       if (docType !== undefined) updateData.docType = docType;
 
-      // â”€â”€ Document Number Handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // -- Document Number Handling ----------------------------------
       // Safe-guard: if documentNo is provided, only update if it differs
       // from the existing value AND no other invoice already uses it.
       const resolvedDocNo =
@@ -794,7 +794,7 @@ const invoiceController = {
         const incomingDocNo = normalizeOptionalText(resolvedDocNo);
 
         if (incomingDocNo !== existingDocNo) {
-          // documentNo is being changed â€” check for duplicate
+          // documentNo is being changed - check for duplicate
           const duplicate = await prisma.invoice.findUnique({
             where: { documentNo: incomingDocNo },
             select: { id: true },
@@ -812,7 +812,7 @@ const invoiceController = {
         // If incomingDocNo === existingDocNo, simply omit documentNo
         // from the update payload to avoid triggering the unique constraint.
       }
-      // â”€â”€ End Document Number Handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // -- End Document Number Handling ------------------------------
       if (date !== undefined) updateData.date = new Date(date);
 
       const existingReceived = toMoneyNumber(existing.received);

@@ -1,9 +1,9 @@
-﻿import { Router } from 'express';
+import express from 'express';
 import paymentController from '../controllers/paymentController.ts';
 
-const router = Router();
+const router = express.Router();
 
-// POST /api/payments/collect â€” must be before /:id to avoid route param conflict
+// POST /api/payments/collect - must be before /:id to avoid route param conflict
 router.post('/collect', paymentController.collect);
 
 // POST /api/payments/bulk-collect

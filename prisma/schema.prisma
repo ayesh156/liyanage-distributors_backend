@@ -255,9 +255,19 @@ model Product {
   stockItems             StockItem[]
   movementItems          StockMovement[]
   damagedRecords         DamagedGoodsRecord[]
-  vanInventories         VanInventory[]
 
   @@map("products")
+}
+
+// ── Master Category Model ──
+// Dynamic product category options for hardware warehouse & dispatch
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("categories")
 }
 
 // ── Multi-Location Segregated Stock Item ──
@@ -373,6 +383,8 @@ model DailyVanManifest {
   uncheckedCount     Int       @default(0)
   totalUnits         Float     @default(0)
   totalValue         Float     @default(0)
+  morningCheckedItems Json?
+  eveningCheckedItems Json?
   itemsSnapshot      Json?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -391,22 +403,4 @@ model SystemSetting {
   updatedAt DateTime @updatedAt
 
   @@map("system_settings")
-}
-
-// ── Perpetual Mobile Van Inventory Model ──
-// Represents the continuous, non-date-bound on-hand balance for a van mobile warehouse
-model VanInventory {
-  id        String   @id @default(uuid())
-  vanId     String   // Identifies vehicle (e.g. "VAN-01")
-  skuId     String   // References Product.sku
-  quantity  Int      @default(0)
-  updatedAt DateTime @updatedAt
-  createdAt DateTime @default(now())
-
-  product   Product? @relation(fields: [skuId], references: [sku], onDelete: Cascade)
-
-  @@unique([vanId, skuId])
-  @@index([vanId])
-  @@index([skuId])
-  @@map("van_inventory")
 }
