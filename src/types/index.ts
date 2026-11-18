@@ -367,6 +367,8 @@ export interface UpdateProductInput {
   basePrice?: number;
   companyDiscountPercent?: number;
   targetCapacity?: number;
+  warehouseQty?: number;
+  quantity?: number;
 }
 
 export interface ProductQueryParams {

@@ -60,7 +60,7 @@ export async function ensureDefaultLocations(tx: any = prisma): Promise<void> {
     await tx.inventoryLocation.create({
       data: {
         id: 'LOC_VAN_01',
-        name: 'Delivery Van 01',
+        name: 'Delivery Van',
         category: 'Delivery Van',
         type: 'VEHICLE',
         vehicleId: 'VAN-01',
@@ -187,11 +187,11 @@ export const WarehouseService = {
   async registerProduct(dto: CreateProductInput, user: AuthenticatedUser) {
     const sku = validateNonEmptyString(dto.sku, 'SKU Code').toUpperCase();
     const name = validateNonEmptyString(dto.name, 'Product Name');
-    const category = dto.category?.trim() || 'General Hardware';
+    const category = dto.category?.trim() || 'Uncategorized';
     const unit = dto.unit?.trim() || 'Unit';
     const basePrice = validateNonNegativeNumber(dto.basePrice ?? 0, 'Base Price');
     const discountPercent = validateNonNegativeNumber(dto.companyDiscountPercent ?? 0, 'Discount %');
-    const targetCapacity = validatePositiveNumber(dto.targetCapacity ?? 100, 'Target Capacity');
+    const targetCapacity = validatePositiveNumber(dto.targetCapacity ?? 1, 'Target Capacity');
     const initialQty = validateNonNegativeNumber(dto.initialQuantity ?? 0, 'Initial Stock Quantity');
 
     // Duplicate SKU check
@@ -331,6 +331,77 @@ export const WarehouseService = {
           lastUpdatedBy: user.username,
         },
       });
+
+      // Update or create stock item in Central Warehouse (LOC_MAIN) if warehouseQty is supplied
+      if (dto.warehouseQty !== undefined || dto.quantity !== undefined) {
+        const targetWarehouseQty = validateNonNegativeNumber(
+          dto.warehouseQty !== undefined ? dto.warehouseQty : dto.quantity!,
+          'Warehouse On-Hand Quantity'
+        );
+
+        const existingMainStock = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_MAIN',
+              productId,
+            },
+          },
+        });
+
+        const prevQty = existingMainStock ? existingMainStock.quantity : 0;
+        const delta = targetWarehouseQty - prevQty;
+
+        await tx.stockItem.upsert({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_MAIN',
+              productId,
+            },
+          },
+          update: {
+            quantity: targetWarehouseQty,
+            productName: name,
+            sku,
+            unit,
+            basePrice,
+            companyDiscountPercent: discountPercent,
+            lastUpdatedBy: user.username,
+            isActive: true,
+          },
+          create: {
+            locationId: 'LOC_MAIN',
+            locationType: 'MAIN_STORE',
+            productId,
+            productName: name,
+            sku,
+            unit,
+            quantity: targetWarehouseQty,
+            basePrice,
+            companyDiscountPercent: discountPercent,
+            targetCapacity: 1,
+            status: 'APPROVED',
+            lastUpdatedBy: user.username,
+            isActive: true,
+          },
+        });
+
+        if (delta !== 0) {
+          await tx.stockMovement.create({
+            data: {
+              movementType: 'WAREHOUSE_AUDIT_ADJUSTMENT',
+              sourceLocation: delta < 0 ? 'LOC_MAIN' : 'WAREHOUSE_ADJUSTMENT',
+              targetLocation: delta < 0 ? 'AUDIT_WRITE_OFF' : 'LOC_MAIN',
+              productId,
+              productName: name,
+              quantity: Math.abs(delta),
+              unitPrice: calcNetUnitPrice(basePrice, discountPercent),
+              previousQty: prevQty,
+              newQty: targetWarehouseQty,
+              reference: `Manual Warehouse Stock Adjustment by ${user.username}`,
+            },
+          });
+        }
+      }
 
       return {
         product: {
@@ -650,54 +721,19 @@ export const WarehouseService = {
   },
 
   /**
-   * List dynamic hardware categories.
+   * List dynamic hardware categories strictly from the database.
    */
   async getCategories() {
     try {
       if ((prisma as any).category) {
-        const categories = await (prisma as any).category.findMany({
+        return await (prisma as any).category.findMany({
           where: { isActive: true },
           orderBy: { name: 'asc' },
         });
-        if (categories && categories.length > 0) {
-          return categories;
-        }
       }
+      return [];
     } catch (_err) {
-      // Graceful fallback if table is not yet pushed
-    }
-
-    try {
-      const distinctProds = await prisma.product.findMany({
-        where: { isActive: true },
-        select: { category: true },
-        distinct: ['category'],
-      });
-      const names = distinctProds.map((p) => p.category).filter(Boolean);
-      const defaults = [
-        'Cables & Wires',
-        'Lighting & Lamps',
-        'Switchgear & Wiring',
-        'Plumbing & PVC',
-        'Tools & Hardware',
-        'Paints & Finishing',
-        'General Hardware',
-      ];
-      const merged = Array.from(new Set([...defaults, ...names]));
-      return merged.map((name, idx) => ({
-        id: idx + 1,
-        name,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-      }));
-    } catch {
-      return [
-        { id: 1, name: 'Cables & Wires', isActive: true, createdAt: new Date().toISOString() },
-        { id: 2, name: 'Lighting & Lamps', isActive: true, createdAt: new Date().toISOString() },
-        { id: 3, name: 'Switchgear & Wiring', isActive: true, createdAt: new Date().toISOString() },
-        { id: 4, name: 'Plumbing & PVC', isActive: true, createdAt: new Date().toISOString() },
-        { id: 5, name: 'General Hardware', isActive: true, createdAt: new Date().toISOString() },
-      ];
+      return [];
     }
   },
 

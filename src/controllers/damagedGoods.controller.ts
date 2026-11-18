@@ -77,6 +77,29 @@ export const DamagedGoodsController = {
   },
 
   /**
+   * POST /api/damaged-goods/:id/undo-to-stock
+   * Accidental entry fix: reverses damage, returns stock to origin, soft-deletes record.
+   */
+  undoToStock: catchAsync(async (req: Request, res: Response) => {
+    const parsedId = parseInt(String(req.params.id), 10);
+    if (isNaN(parsedId) || parsedId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Damaged goods record ID must be a positive integer greater than 0.',
+      });
+    }
+
+    const user = req.user || {
+      userId: 'system',
+      username: 'Warehouse Manager',
+      role: 'ADMIN',
+    };
+
+    const result = await VanStockService.undoDamagedToStock(parsedId, user);
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
    * DELETE /api/damaged-goods/:id
    * Soft-delete quarantined record.
    */

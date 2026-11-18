@@ -181,7 +181,7 @@ export const VanStockService = {
         productName: item.productName,
         sku,
         unit: item.unit || item.product?.unit || 'Unit',
-        category: item.product?.category || 'General',
+        category: item.product?.category || 'Uncategorized',
         quantity: currentEffectiveQty,
         basePrice: item.basePrice,
         companyDiscountPercent: item.companyDiscountPercent,
@@ -207,7 +207,7 @@ export const VanStockService = {
     const replenishmentPlanner = allProducts.map((prod) => {
       const vanItem = vanStockItems.find((v) => v.productId === prod.id);
       const currentOnHand = vanItem ? vanItem.quantity : 0;
-      const targetCapacity = vanItem?.targetCapacity || prod.targetCapacity || 100;
+      const targetCapacity = vanItem?.targetCapacity || prod.targetCapacity || 1;
       const netPrice = calcNetUnitPrice(prod.basePrice, prod.companyDiscountPercent);
       const needed = Math.max(0, targetCapacity - currentOnHand);
       const cost = Math.round(needed * netPrice * 100) / 100;
@@ -1316,6 +1316,62 @@ export const VanStockService = {
       } catch (movErr) {
         console.warn('[updateDamagedStatus] Warning creating vendor return movement:', movErr);
       }
+    } else if (newStatus === 'LOGGED' && record.status === 'VENDOR_RETURN') {
+      try {
+        const damagedStock = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_DAMAGED',
+              productId: record.productId,
+            },
+          },
+        });
+        if (damagedStock) {
+          await tx.stockItem.update({
+            where: { id: damagedStock.id },
+            data: {
+              quantity: damagedStock.quantity + record.quantity,
+              lastUpdatedBy: performedBy,
+            },
+          });
+        } else {
+          await tx.stockItem.create({
+            data: {
+              locationId: 'LOC_DAMAGED',
+              locationType: 'DAMAGED_GOODS',
+              productId: record.productId,
+              productName: record.productName,
+              quantity: record.quantity,
+              basePrice: record.unitPrice,
+              lastUpdatedBy: performedBy,
+            },
+          });
+        }
+      } catch (stockErr) {
+        console.warn('[updateDamagedStatus] Warning restoring LOC_DAMAGED stock item:', stockErr);
+      }
+
+      try {
+        movement = await tx.stockMovement.create({
+          data: {
+            movementType: 'RETURN_TO_DAMAGED_POOL',
+            sourceLocation: 'SUPPLIER_WARRANTY',
+            targetLocation: 'LOC_DAMAGED',
+            productId: record.productId,
+            productName: record.productName,
+            quantity: record.quantity,
+            unitPrice: record.unitPrice,
+            previousQty: 0,
+            newQty: record.quantity,
+            reference: `RE-DMG-${record.id}`,
+            manifestNo: record.manifestNo || '',
+            performedBy,
+            notes: dto.resolutionNotes || 'Reverted from Vendor Return back to active Damaged Goods pool',
+          },
+        });
+      } catch (movErr) {
+        console.warn('[updateDamagedStatus] Warning creating re-damage movement:', movErr);
+      }
     }
 
     return {
@@ -1353,6 +1409,263 @@ export const VanStockService = {
 
   return { success: true, message: `Damaged record #${recordId} soft-deleted successfully.` };
 },
+
+  /**
+   * Accidental entry fix: Reverses a damaged goods entry, restores stock to the original
+   * vehicle or warehouse inventory, logs an audit stock movement, and soft-deletes the record.
+   */
+  async undoDamagedToStock(id: number, user?: AuthenticatedUser) {
+    const recordId = validatePositiveNumber(id, 'Damaged Record ID');
+
+    return await prisma.$transaction(async (tx) => {
+      const record = await tx.damagedGoodsRecord.findUnique({ where: { id: recordId } });
+      if (!record || !record.isActive) {
+        throw new AppError('Damaged goods record not found or already resolved.', 404);
+      }
+
+      // 1. Soft-delete the damage record
+      const updated = await tx.damagedGoodsRecord.update({
+        where: { id: recordId },
+        data: {
+          isActive: false,
+          status: 'WRITTEN_OFF',
+          resolutionNotes: 'Accidental entry undone - returned to stock',
+        },
+      });
+
+      // 2. Deduct from LOC_DAMAGED
+      try {
+        const damagedStock = await tx.stockItem.findUnique({
+          where: {
+            locationId_productId: {
+              locationId: 'LOC_DAMAGED',
+              productId: record.productId,
+            },
+          },
+        });
+        if (damagedStock) {
+          await tx.stockItem.update({
+            where: { id: damagedStock.id },
+            data: {
+              quantity: Math.max(0, damagedStock.quantity - record.quantity),
+              lastUpdatedBy: user?.username || 'Warehouse Manager',
+            },
+          });
+        }
+      } catch (err) {
+        console.warn('[undoDamagedToStock] Error deducting LOC_DAMAGED stock:', err);
+      }
+
+      // 3. Upsert directly into Central Warehouse (LOC_MAIN)
+      const existingProduct = await tx.product.findUnique({
+        where: { id: record.productId },
+      });
+
+      const productName = existingProduct?.name || record.productName;
+      const sku = existingProduct?.sku || record.sku || '';
+      const unit = existingProduct?.unit || record.unit || 'Unit';
+      const basePrice = existingProduct?.basePrice || record.unitPrice || 0;
+      const discountPercent = existingProduct?.companyDiscountPercent || 0;
+
+      await tx.stockItem.upsert({
+        where: {
+          locationId_productId: {
+            locationId: 'LOC_MAIN',
+            productId: record.productId,
+          },
+        },
+        update: {
+          quantity: { increment: record.quantity },
+          productName,
+          sku,
+          unit,
+          basePrice,
+          companyDiscountPercent: discountPercent,
+          isActive: true,
+          lastUpdatedBy: user?.username || 'Warehouse Manager',
+        },
+        create: {
+          locationId: 'LOC_MAIN',
+          locationType: 'MAIN_STORE',
+          productId: record.productId,
+          productName,
+          sku,
+          unit,
+          quantity: record.quantity,
+          basePrice,
+          companyDiscountPercent: discountPercent,
+          targetCapacity: 1,
+          status: 'APPROVED',
+          lastUpdatedBy: user?.username || 'Warehouse Manager',
+          isActive: true,
+        },
+      });
+
+      // 4. Create immutable audit movement
+      let movement = null;
+      try {
+        movement = await tx.stockMovement.create({
+          data: {
+            movementType: 'WAREHOUSE_AUDIT_ADJUSTMENT',
+            sourceLocation: 'LOC_DAMAGED',
+            targetLocation: 'LOC_MAIN',
+            productId: record.productId,
+            productName: record.productName,
+            quantity: record.quantity,
+            unitPrice: record.unitPrice,
+            previousQty: 0,
+            newQty: record.quantity,
+            reference: `UNDO-DMG-${record.id}`,
+            manifestNo: record.manifestNo || '',
+            performedBy: user?.username || 'Warehouse Manager',
+            notes: 'Restored damaged stock strictly into Central Warehouse (LOC_MAIN)',
+          },
+        });
+      } catch (movErr) {
+        console.warn('[undoDamagedToStock] Warning creating undo movement:', movErr);
+      }
+
+      return {
+        success: true,
+        record: {
+          ...updated,
+          createdAt: updated.createdAt.toISOString(),
+          updatedAt: updated.updatedAt.toISOString(),
+        },
+        movement: movement
+          ? {
+              ...movement,
+              createdAt: movement.createdAt.toISOString(),
+            }
+          : null,
+      };
+    });
+  },
+
+  /**
+   * Safe Stock Movement Reversal:
+   * Restores quantity to source location, deducts from target location,
+   * prevents double reversals, and records an immutable audit trail movement.
+   */
+  async reverseStockMovement(movementId: number, user?: AuthenticatedUser) {
+    const movId = validatePositiveNumber(movementId, 'Movement ID');
+    if (movId > 2147483647) {
+      throw new AppError('Movement ID exceeds maximum 32-bit integer range.', 400);
+    }
+
+    const performedBy = user?.username || 'Warehouse Manager';
+
+    return await prisma.$transaction(async (tx) => {
+      const original = await tx.stockMovement.findUnique({
+        where: { id: movId },
+      });
+
+      if (!original) {
+        throw new AppError('Stock movement not found.', 404);
+      }
+
+      if (original.reference?.startsWith('REV-MOV-')) {
+        throw new AppError('Cannot reverse a movement that is itself a reversal transaction.', 400);
+      }
+
+      // Check if already reversed
+      const existingRev = await tx.stockMovement.findFirst({
+        where: { reference: `REV-MOV-${movId}` },
+      });
+      if (existingRev) {
+        throw new AppError('This stock movement has already been reversed.', 400);
+      }
+
+      const qty = original.quantity;
+      const nonDeductibleLocations = ['CUSTOMER_OUTBOUND', 'SCRAP_DISPOSAL', 'SUPPLIER_WARRANTY', 'SUPPLIER_PURCHASE'];
+      const nonRestorableLocations = ['CUSTOMER_OUTBOUND', 'SUPPLIER_INBOUND', 'SUPPLIER_PURCHASE'];
+
+      // 1. Deduct from target location (the location that previously received the stock)
+      if (original.targetLocation && !nonDeductibleLocations.includes(original.targetLocation)) {
+        try {
+          const targetStock = await tx.stockItem.findFirst({
+            where: {
+              locationId: original.targetLocation,
+              productId: original.productId,
+            },
+          });
+          if (targetStock) {
+            await tx.stockItem.update({
+              where: { id: targetStock.id },
+              data: {
+                quantity: Math.max(0, targetStock.quantity - qty),
+                lastUpdatedBy: performedBy,
+              },
+            });
+          }
+        } catch (err) {
+          console.warn('[reverseStockMovement] Error deducting target location stock:', err);
+        }
+      }
+
+      // 2. Restore to source location (the location that originally dispatched the stock)
+      if (original.sourceLocation && !nonRestorableLocations.includes(original.sourceLocation)) {
+        try {
+          const sourceStock = await tx.stockItem.findFirst({
+            where: {
+              locationId: original.sourceLocation,
+              productId: original.productId,
+            },
+          });
+          if (sourceStock) {
+            await tx.stockItem.update({
+              where: { id: sourceStock.id },
+              data: {
+                quantity: sourceStock.quantity + qty,
+                lastUpdatedBy: performedBy,
+              },
+            });
+          } else {
+            await tx.stockItem.create({
+              data: {
+                locationId: original.sourceLocation,
+                locationType: original.sourceLocation.includes('VAN') ? 'VEHICLE' : 'MAIN_STORE',
+                productId: original.productId,
+                productName: original.productName,
+                quantity: qty,
+                basePrice: original.unitPrice,
+                lastUpdatedBy: performedBy,
+              },
+            });
+          }
+        } catch (err) {
+          console.warn('[reverseStockMovement] Error restoring source location stock:', err);
+        }
+      }
+
+      // 3. Create immutable compensating stock movement
+      const reversalMovement = await tx.stockMovement.create({
+        data: {
+          movementType: 'WAREHOUSE_AUDIT_ADJUSTMENT',
+          sourceLocation: original.targetLocation,
+          targetLocation: original.sourceLocation,
+          productId: original.productId,
+          productName: original.productName,
+          quantity: qty,
+          unitPrice: original.unitPrice,
+          previousQty: 0,
+          newQty: qty,
+          reference: `REV-MOV-${original.id}`,
+          manifestNo: original.manifestNo || '',
+          performedBy,
+          notes: `Reversal of movement #${original.id} (${original.movementType}): restored to ${original.sourceLocation}, deducted from ${original.targetLocation}`,
+        },
+      });
+
+      return {
+        success: true,
+        reversalMovement: {
+          ...reversalMovement,
+          createdAt: reversalMovement.createdAt.toISOString(),
+        },
+      };
+    });
+  },
 
   /**
    * Stamped with Owner signature and dispatches / re-dispatches Daily Manifest.

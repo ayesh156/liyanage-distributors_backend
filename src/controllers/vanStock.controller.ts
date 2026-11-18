@@ -105,6 +105,60 @@ export const VanStockController = {
       });
     }
   },
+
+  undoDamagedToStock: async (req: Request, res: Response) => {
+    try {
+      const parsedId = parseInt(String(req.params.id), 10);
+      if (isNaN(parsedId) || parsedId <= 0 || parsedId > 2147483647) {
+        return res.status(400).json({
+          success: false,
+          error: 'Damaged goods record ID must be a valid positive 32-bit integer.',
+        });
+      }
+
+      const user = req.user || {
+        userId: 'system',
+        username: 'Warehouse Manager',
+        role: 'ADMIN',
+      };
+
+      const result = await VanStockService.undoDamagedToStock(parsedId, user);
+      return res.status(200).json({ success: true, data: result });
+    } catch (error: any) {
+      console.error(`[VanStockController.undoDamagedToStock] Error undoing record ${req.params.id}:`, error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        error: error.message || 'Internal server error undoing damaged status',
+      });
+    }
+  },
+
+  reverseStockMovement: async (req: Request, res: Response) => {
+    try {
+      const parsedId = parseInt(String(req.params.id), 10);
+      if (isNaN(parsedId) || parsedId <= 0 || parsedId > 2147483647) {
+        return res.status(400).json({
+          success: false,
+          error: 'Movement ID must be a valid positive 32-bit integer.',
+        });
+      }
+
+      const user = req.user || {
+        userId: 'system',
+        username: 'Warehouse Manager',
+        role: 'ADMIN',
+      };
+
+      const result = await VanStockService.reverseStockMovement(parsedId, user);
+      return res.status(200).json({ success: true, data: result });
+    } catch (error: any) {
+      console.error(`[VanStockController.reverseStockMovement] Error reversing movement ${req.params.id}:`, error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        error: error.message || 'Internal server error reversing stock movement',
+      });
+    }
+  },
 };
 
 export default VanStockController;
