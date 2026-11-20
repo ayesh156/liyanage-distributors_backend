@@ -194,6 +194,8 @@ export const VanStockService = {
         repChecked: snap ? Boolean(snap.repChecked) : false,
         eveningReconciled: snap ? Boolean(snap.eveningReconciled) : false,
         repCheckedAt: snap?.repCheckedAt ? String(snap.repCheckedAt) : null,
+        weeklyVerified: Boolean((item as any).weeklyVerified),
+        weeklyVerifiedAt: (item as any).weeklyVerifiedAt ? (item as any).weeklyVerifiedAt.toISOString() : null,
         discrepancyFlag: snap ? Boolean(snap.discrepancyFlag) : false,
         isActive: item.isActive,
       };
@@ -261,11 +263,17 @@ export const VanStockService = {
       vehicle,
       vanStock: items,
       replenishmentPlanner,
-      movements: recentMovements.map((m) => ({
-        ...m,
-        timestamp: m.createdAt.toISOString(),
-        createdAt: m.createdAt.toISOString(),
-      })),
+      movements: recentMovements.map((m) => {
+        const prod = allProducts.find((p) => p.id === m.productId) ||
+          allProducts.find((p) => p.name.trim().toLowerCase() === m.productName?.trim().toLowerCase());
+        const resolvedSku = prod?.sku || (m as any).sku || '';
+        return {
+          ...m,
+          sku: resolvedSku,
+          timestamp: m.createdAt.toISOString(),
+          createdAt: m.createdAt.toISOString(),
+        };
+      }),
       kpis: {
         totalValue: Math.round(vanTotalValue * 100) / 100,
         totalUnits: vanTotalUnits,
@@ -312,20 +320,76 @@ export const VanStockService = {
       orderBy: [{ manifestRevision: 'desc' }, { createdAt: 'desc' }],
     });
 
+    // Query all van stock items without filtering out quantity == 0 so sold-out items are preserved
     const vanItems = await prisma.stockItem.findMany({
       where: {
         locationId: vehicle.locationId,
-        quantity: { gt: 0 },
         isActive: true,
       },
       include: { product: true },
       orderBy: { productName: 'asc' },
     });
 
+    // Query day's outbound road sales movements to reconstruct original dispatched quantities
+    const [roadSaleMovements, masterCatalog] = await Promise.all([
+      prisma.stockMovement.findMany({
+        where: {
+          sourceLocation: vehicle.locationId,
+          movementType: 'VEHICLE_SALES_OUTBOUND',
+          createdAt: {
+            gte: dayStart,
+            lte: dayEnd,
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.product.findMany(),
+    ]);
+
+    const catalogById = new Map<number, any>(masterCatalog.map((p) => [p.id, p]));
+    const catalogByName = new Map<string, any>(masterCatalog.map((p) => [p.name.trim().toLowerCase(), p]));
+
+    // Map road sales quantities per product for the date
+    const roadSalesMap = new Map<number, any>();
+    roadSaleMovements.forEach((m) => {
+      const existing = roadSalesMap.get(m.productId);
+      if (existing) {
+        existing.quantity += m.quantity;
+        existing.totalValue = Math.round((existing.totalValue + m.quantity * m.unitPrice) * 100) / 100;
+        if (m.reference && !existing.references.includes(m.reference)) {
+          existing.references.push(m.reference);
+        }
+      } else {
+        const prod = vanItems.find((v) => v.productId === m.productId)?.product ||
+          catalogById.get(m.productId) ||
+          catalogByName.get(m.productName?.trim().toLowerCase());
+        const resolvedSku = prod?.sku || (m as any).sku || '';
+        roadSalesMap.set(m.productId, {
+          id: m.id,
+          productId: m.productId,
+          productName: m.productName,
+          sku: resolvedSku,
+          unit: prod?.unit || 'Unit',
+          quantity: m.quantity,
+          netUnitPrice: m.unitPrice,
+          unitPrice: m.unitPrice,
+          basePrice: prod?.basePrice || m.unitPrice,
+          companyDiscountPercent: prod?.companyDiscountPercent || 0,
+          totalValue: Math.round(m.quantity * m.unitPrice * 100) / 100,
+          references: m.reference ? [m.reference] : [],
+        });
+      }
+    });
+
+    const roadSalesList = Array.from(roadSalesMap.values()).map((r) => ({
+      ...r,
+      reference: r.references.join(', '),
+    }));
+
     const snapshotMap = new Map<number, any>();
     if (manifest && Array.isArray(manifest.itemsSnapshot)) {
       (manifest.itemsSnapshot as any[]).forEach((s) => {
-        if (s && s.id) snapshotMap.set(s.id, s);
+        if (s && (s.id || s.productId)) snapshotMap.set(s.id || s.productId, s);
       });
     }
 
@@ -338,12 +402,31 @@ export const VanStockService = {
 
     let totalUnits = 0;
     let totalValue = 0;
-    const itemsList = vanItems.map((item) => {
+    const itemsList: any[] = [];
+
+    vanItems.forEach((item) => {
+      const snap = snapshotMap.get(item.id) || snapshotMap.get(item.productId);
+      const soldEntry = roadSalesMap.get(item.productId);
+      const soldTodayQty = soldEntry ? soldEntry.quantity : 0;
+
+      // Preserves original dispatched quantity: on-hand quantity + items sold today, or dispatchedQty / snapshot
+      const rawDispatchedQty = (item as any).dispatchedQty || 0;
+      const dispatchedQuantity = Math.max(
+        item.quantity + soldTodayQty,
+        rawDispatchedQty,
+        snap?.quantity || 0
+      );
+
+      // Only include items that were part of the dispatched stock for the day
+      if (dispatchedQuantity <= 0 && item.quantity <= 0) {
+        return;
+      }
+
+      const displayQty = dispatchedQuantity > 0 ? dispatchedQuantity : item.quantity;
       const net = calcNetUnitPrice(item.basePrice, item.companyDiscountPercent);
-      const val = Math.round(net * item.quantity * 100) / 100;
-      totalUnits += item.quantity;
+      const val = Math.round(net * displayQty * 100) / 100;
+      totalUnits += displayQty;
       totalValue += val;
-      const snap = snapshotMap.get(item.id);
 
       const sku = item.sku || item.product?.sku || '';
       const pidStr = item.productId ? String(item.productId) : '';
@@ -363,13 +446,16 @@ export const VanStockService = {
         eveningCheckedArr.includes(idStr)
       );
 
-      return {
+      itemsList.push({
         id: item.id,
         productId: item.productId,
         productName: item.productName,
         sku,
         unit: item.unit || item.product?.unit || 'Unit',
-        quantity: item.quantity,
+        quantity: displayQty,
+        dispatchedQty: displayQty,
+        onHandQuantity: item.quantity,
+        soldQuantity: soldTodayQty,
         basePrice: item.basePrice,
         discountPercent: item.companyDiscountPercent,
         netUnitPrice: net,
@@ -377,9 +463,11 @@ export const VanStockService = {
         repChecked: isMorning,
         eveningReconciled: isEvening,
         repCheckedAt: snap?.repCheckedAt ? String(snap.repCheckedAt) : null,
+        weeklyVerified: Boolean((item as any).weeklyVerified),
+        weeklyVerifiedAt: (item as any).weeklyVerifiedAt ? (item as any).weeklyVerifiedAt.toISOString() : null,
         discrepancyFlag: snap ? Boolean(snap.discrepancyFlag) : false,
         status: item.status,
-      };
+      });
     });
 
     if (!manifest) {
@@ -420,6 +508,7 @@ export const VanStockService = {
       createdAt: manifest.createdAt.toISOString(),
       updatedAt: manifest.updatedAt.toISOString(),
       items: itemsList,
+      roadSales: roadSalesList,
     };
   },
 
@@ -518,20 +607,23 @@ export const VanStockService = {
         });
 
         const prevVanQty = vanItem ? vanItem.quantity : 0;
+        const prevDispatchedQty = vanItem ? ((vanItem as any).dispatchedQty || prevVanQty) : 0;
         const newVanQty = prevVanQty + qty;
+        const newDispatchedQty = prevDispatchedQty + qty;
 
         if (vanItem) {
           vanItem = await tx.stockItem.update({
             where: { id: vanItem.id },
             data: {
               quantity: newVanQty,
+              dispatchedQty: newDispatchedQty,
               status: 'PENDING_CONFIRMATION',
               repChecked: false,
               repCheckedAt: null,
               discrepancyFlag: false,
               isActive: true,
               lastUpdatedBy: username,
-            },
+            } as any,
           });
         } else {
           vanItem = await tx.stockItem.create({
@@ -544,6 +636,7 @@ export const VanStockService = {
               sku: product.sku,
               unit: product.unit,
               quantity: newVanQty,
+              dispatchedQty: newDispatchedQty,
               basePrice: product.basePrice,
               companyDiscountPercent: product.companyDiscountPercent,
               targetCapacity: product.targetCapacity,
@@ -553,7 +646,7 @@ export const VanStockService = {
               discrepancyFlag: false,
               isActive: true,
               lastUpdatedBy: username,
-            },
+            } as any,
           });
         }
         lastVanItem = vanItem;
@@ -2298,6 +2391,49 @@ export const VanStockService = {
         },
       };
     });
+  },
+
+  /**
+   * Toggles weekly physical stock verification audit for a loaded van stock item.
+   */
+  async toggleWeeklyVerified(stockItemId: number, value?: boolean) {
+    const item = await prisma.stockItem.findUnique({
+      where: { id: stockItemId },
+    });
+    if (!item) {
+      throw new AppError('Stock item not found', 404);
+    }
+    const currentVal = Boolean((item as any).weeklyVerified);
+    const nextVal = typeof value === 'boolean' ? value : !currentVal;
+
+    const updated = await prisma.stockItem.update({
+      where: { id: stockItemId },
+      data: {
+        weeklyVerified: nextVal,
+        weeklyVerifiedAt: nextVal ? new Date() : null,
+      } as any,
+    });
+    return updated;
+  },
+
+  /**
+   * Resets all weekly verification audit ticks for the specified vehicle.
+   */
+  async resetWeeklyVerification(vehicleId: string = 'VAN-01') {
+    const vehicle = await resolveVehicleContext(vehicleId, prisma);
+    const locationId = vehicle?.locationId || 'LOC_VAN_01';
+
+    await prisma.stockItem.updateMany({
+      where: {
+        locationId,
+        isActive: true,
+      },
+      data: {
+        weeklyVerified: false,
+        weeklyVerifiedAt: null,
+      } as any,
+    });
+    return { success: true, message: `Weekly verification reset for ${vehicleId}` };
   },
 };
 

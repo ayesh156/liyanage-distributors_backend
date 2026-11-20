@@ -13,6 +13,127 @@ const __dirname = path.dirname(__filename);
 
 export const settingsController = {
   /**
+   * GET /api/settings
+   * Fetches general company settings including report signature configurations.
+   */
+  async getCompanySettings(req, res) {
+    try {
+      let settings = null;
+      try {
+        settings = await prisma.companySettings.findFirst({
+          orderBy: { id: 'asc' },
+        });
+      } catch (_e) {
+        // Fallback to key-value SystemSetting
+      }
+
+      if (!settings) {
+        const fallback = await prisma.systemSetting.findUnique({
+          where: { key: 'REPORT_SIGNATURE_SETTINGS' },
+        });
+        if (fallback) {
+          const parsed = JSON.parse(fallback.value);
+          return res.status(200).json({
+            success: true,
+            data: {
+              reportSignatureRole: parsed.reportSignatureRole || 'Driver',
+              reportSignatureName: parsed.reportSignatureName || '',
+            },
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          data: {
+            reportSignatureRole: 'Driver',
+            reportSignatureName: '',
+          },
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          ...settings,
+          reportSignatureRole: settings.reportSignatureRole || 'Driver',
+        },
+      });
+    } catch (error) {
+      console.error('[settingsController.getCompanySettings] Error:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to fetch company settings',
+      });
+    }
+  },
+
+  /**
+   * PUT or PATCH /api/settings
+   * Persists company settings including report signature role and name.
+   */
+  async updateCompanySettings(req, res) {
+    try {
+      const {
+        reportSignatureRole = 'Driver',
+        reportSignatureName = '',
+        companyName = 'Liyanage Distributors',
+      } = req.body;
+
+      const payload = {
+        reportSignatureRole: String(reportSignatureRole || 'Driver').trim(),
+        reportSignatureName: String(reportSignatureName || '').trim(),
+        companyName: String(companyName || 'Liyanage Distributors').trim(),
+        updatedBy: req.user?.username || 'SYSTEM',
+      };
+
+      let record = null;
+      try {
+        const existing = await prisma.companySettings.findFirst({
+          orderBy: { id: 'asc' },
+        });
+
+        if (existing) {
+          record = await prisma.companySettings.update({
+            where: { id: existing.id },
+            data: payload,
+          });
+        } else {
+          record = await prisma.companySettings.create({
+            data: payload,
+          });
+        }
+      } catch (_e) {
+        // Soft fallback
+      }
+
+      await prisma.systemSetting.upsert({
+        where: { key: 'REPORT_SIGNATURE_SETTINGS' },
+        update: {
+          value: JSON.stringify(payload),
+          updatedBy: req.user?.username || 'SYSTEM',
+        },
+        create: {
+          key: 'REPORT_SIGNATURE_SETTINGS',
+          value: JSON.stringify(payload),
+          updatedBy: req.user?.username || 'SYSTEM',
+        },
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: record || payload,
+        message: 'Company report signature settings updated successfully',
+      });
+    } catch (error) {
+      console.error('[settingsController.updateCompanySettings] Error:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to update company settings',
+      });
+    }
+  },
+
+  /**
    * GET /api/settings/vehicle
    */
   async getVehicleProfile(req, res) {

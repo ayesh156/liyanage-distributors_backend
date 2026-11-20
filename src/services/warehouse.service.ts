@@ -21,9 +21,13 @@ import type {
 
 /**
  * Calculates net wholesale unit price given base price and company discount percent.
+ * Properly supports decimal discounts (e.g. 2.5%, 7.25%, 12.5%) and rounds to 2 decimal places.
  */
 export function calcNetUnitPrice(basePrice: number, discountPercent: number): number {
-  const discount = Math.max(0, Math.min(100, discountPercent || 0));
+  const parsedDiscount = typeof discountPercent === 'number'
+    ? discountPercent
+    : parseFloat(String(discountPercent)) || 0;
+  const discount = Math.max(0, Math.min(100, parsedDiscount));
   return Math.round((basePrice * (1 - discount / 100)) * 100) / 100;
 }
 
@@ -189,8 +193,16 @@ export const WarehouseService = {
     const name = validateNonEmptyString(dto.name, 'Product Name');
     const category = dto.category?.trim() || 'Uncategorized';
     const unit = dto.unit?.trim() || 'Unit';
-    const basePrice = validateNonNegativeNumber(dto.basePrice ?? 0, 'Base Price');
-    const discountPercent = validateNonNegativeNumber(dto.companyDiscountPercent ?? 0, 'Discount %');
+    const basePrice = validateNonNegativeNumber(
+      typeof dto.basePrice === 'string' ? parseFloat(dto.basePrice) : (dto.basePrice ?? 0),
+      'Base Price'
+    );
+    const discountPercent = validateNonNegativeNumber(
+      typeof dto.companyDiscountPercent === 'string'
+        ? parseFloat(dto.companyDiscountPercent) || 0
+        : (dto.companyDiscountPercent ?? 0),
+      'Discount %'
+    );
     const targetCapacity = validatePositiveNumber(dto.targetCapacity ?? 1, 'Target Capacity');
     const initialQty = validateNonNegativeNumber(dto.initialQuantity ?? 0, 'Initial Stock Quantity');
 
@@ -301,8 +313,17 @@ export const WarehouseService = {
     const name = dto.name !== undefined ? validateNonEmptyString(dto.name, 'Product Name') : existingProduct.name;
     const category = dto.category !== undefined ? dto.category.trim() : existingProduct.category;
     const unit = dto.unit !== undefined ? dto.unit.trim() : existingProduct.unit;
-    const basePrice = dto.basePrice !== undefined ? validateNonNegativeNumber(dto.basePrice, 'Base Price') : existingProduct.basePrice;
-    const discountPercent = dto.companyDiscountPercent !== undefined ? validateNonNegativeNumber(dto.companyDiscountPercent, 'Discount %') : existingProduct.companyDiscountPercent;
+    const basePrice = dto.basePrice !== undefined
+      ? validateNonNegativeNumber(typeof dto.basePrice === 'string' ? parseFloat(dto.basePrice) : dto.basePrice, 'Base Price')
+      : existingProduct.basePrice;
+    const discountPercent = dto.companyDiscountPercent !== undefined
+      ? validateNonNegativeNumber(
+          typeof dto.companyDiscountPercent === 'string'
+            ? parseFloat(dto.companyDiscountPercent) || 0
+            : dto.companyDiscountPercent,
+          'Discount %'
+        )
+      : existingProduct.companyDiscountPercent;
     const targetCapacity = dto.targetCapacity !== undefined ? validatePositiveNumber(dto.targetCapacity, 'Target Capacity') : existingProduct.targetCapacity;
 
     return await prisma.$transaction(async (tx) => {

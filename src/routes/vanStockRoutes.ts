@@ -27,6 +27,10 @@ router.post('/return', VanStockController.returnStock);
 router.put('/damaged-goods/:id/status', VanStockController.updateDamagedStatus);
 router.post('/damaged-goods/:id/undo-to-stock', VanStockController.undoDamagedToStock);
 
+// Weekly stock verification audit
+router.patch('/items/:id/weekly-verify', VanStockController.toggleWeeklyVerified);
+router.post('/weekly-verify/reset', VanStockController.resetWeeklyVerification);
+
 // Stock movement reversal
 router.post('/movements/:id/reverse', VanStockController.reverseStockMovement);
 

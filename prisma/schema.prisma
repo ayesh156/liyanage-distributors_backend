@@ -282,6 +282,9 @@ model StockItem {
   sku                    String            @default("")
   unit                   String            @default("Unit")
   quantity               Float             @default(0)
+  dispatchedQty          Float             @default(0) // Preserves original dispatched quantity for same-day stock sheet reporting
+  weeklyVerified         Boolean           @default(false)
+  weeklyVerifiedAt       DateTime?
   basePrice              Float             @default(0)
   companyDiscountPercent Float             @default(0)
   targetCapacity         Float             @default(1) // Target par level for this specific location
@@ -403,4 +406,18 @@ model SystemSetting {
   updatedAt DateTime @updatedAt
 
   @@map("system_settings")
+}
+
+// ── Company Settings Model ──
+// Configurable company profile and report signature titles/names
+model CompanySettings {
+  id                  Int      @id @default(autoincrement())
+  companyName         String   @default("Liyanage Distributors")
+  reportSignatureRole String   @default("Driver")
+  reportSignatureName String   @default("")
+  updatedBy           String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("company_settings")
 }

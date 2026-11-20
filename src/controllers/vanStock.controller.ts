@@ -159,6 +159,27 @@ export const VanStockController = {
       });
     }
   },
+
+  /**
+   * PATCH /api/van-stock/items/:id/weekly-verify
+   * Toggle weekly physical stock verification audit for van stock item.
+   */
+  toggleWeeklyVerified: catchAsync(async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    const { value } = req.body;
+    const result = await VanStockService.toggleWeeklyVerified(id, value);
+    res.status(200).json({ success: true, data: result });
+  }),
+
+  /**
+   * POST /api/van-stock/weekly-verify/reset
+   * Reset all weekly physical verification audit marks for a vehicle.
+   */
+  resetWeeklyVerification: catchAsync(async (req: Request, res: Response) => {
+    const vehicleId = (req.body.vehicleId || req.query.vehicleId || 'VAN-01') as string;
+    const result = await VanStockService.resetWeeklyVerification(vehicleId);
+    res.status(200).json({ success: true, data: result });
+  }),
 };
 
 export default VanStockController;
